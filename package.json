@@ -1,0 +1,77 @@
+{
+    "name": "deepseek-r1-assistant",
+    "displayName": "Deepseek R1 Assistant",
+    "description": "VS Code extension for Deepseek(R1) AI",
+    "version": "0.0.1",
+    "publisher": "kirill31337",
+    "engines": {
+        "vscode": "^1.85.0"
+    },
+    "categories": [
+        "Programming Languages",
+        "Other"
+    ],
+    "activationEvents": [
+        "onLanguage:python",
+        "onLanguage:javascript",
+        "onLanguage:typescript"
+    ],
+    "main": "./out/src/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "deepseek-assistant.openChat",
+                "title": "Open DeepSeek Assistant"
+            }
+        ],
+        "configuration": {
+            "title": "DeepSeek Assistant",
+            "properties": {
+                "deepseekAssistant.apiKey": {
+                    "type": "string",
+                    "description": "DeepSeek API Key"
+                },
+                "deepseekAssistant.endpoint": {
+                    "type": "string",
+                    "default": "https://api.deepseek.com/v1/chat/completions"
+                },
+                "deepseekAssistant.model": {
+                    "type": "string",
+                    "default": "deepseek-reasoner"
+                },
+                "deepseekAssistant.maxTokens": {
+                    "type": "number",
+                    "default": 2000
+                },
+                "deepseekAssistant.streaming": {
+                    "type": "boolean",
+                    "default": true
+                }
+            }
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./",
+        "package": "vsce package"
+    },
+    "dependencies": {
+        "axios": "^1.6.2",
+        "highlight.js": "^11.8.1",
+        "marked": "^6.0.0"
+    },
+    "devDependencies": {
+        "@types/highlight.js": "^10.1.0",
+        "@types/marked": "^6.0.0",
+        "@types/node": "^20.11.0",
+        "@types/vscode": "^1.85.0",
+        "typescript": "^5.3.2"
+    },
+    "settings": {
+        "repository": {
+        "type": "git",
+        "url": "https://github.com/kirill31337/deepseek-assistant.git"
+        }
+    }
+}

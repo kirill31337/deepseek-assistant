@@ -1,0 +1,162 @@
+body {
+  padding: 10px;
+  background-color: #1e1e1e;
+  color: #d4d4d4;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.toolbar {
+  margin-bottom: 15px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.toolbar button {
+  background: #333;
+  border: 1px solid #444;
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.toolbar button:hover {
+  background: #444;
+}
+
+#chat {
+  height: 55vh;
+  overflow-y: auto;
+  border: 1px solid #333;
+  padding: 15px;
+  margin-bottom: 15px;
+  border-radius: 4px;
+  background: #252526;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.reasoning-panel {
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid var(--vscode-editorWidget-border);
+  margin: 5px 0;
+  padding: 8px;
+  background: var(--vscode-editorWidget-background);
+  white-space: pre-wrap;
+  font-family: var(--vscode-editor-font-family);
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.reasoning-header {
+  padding: 8px;
+  background: var(--vscode-editorWidget-background);
+  border-bottom: 1px solid var(--vscode-editorWidget-border);
+  font-weight: bold;
+}
+
+#reasoning-content {
+  padding: 8px;
+  white-space: pre-wrap;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.9em;
+}
+
+.message {
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: 4px;
+  animation: fadeIn 0.3s;
+}
+
+.user-message {
+  background: #1a3a5c;
+  border-left: 4px solid #2196F3;
+}
+
+.assistant-message {
+  background: #1a5c3a;
+  border-left: 4px solid #4CAF50;
+}
+
+pre {
+  background: #252526 !important;
+  padding: 10px;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 10px 0;
+  font-size: 0.9em;
+  color: #888;
+}
+
+.input-container {
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+#input {
+  width: 100%;
+  height: 100px;
+  padding: 12px;
+  background: #252526;
+  color: #d4d4d4;
+  border: 1px solid #333;
+  border-radius: 4px;
+  font-family: 'Consolas', monospace;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+#status {
+  color: #888;
+  font-size: 0.8em;
+  margin: 5px 0;
+}
+#drop-zone {
+  position: relative;
+  height: 100%;
+}
+
+.drag-over {
+  background: rgba(100, 100, 100, 0.2);
+  border: 2px dashed #666;
+}
+
+.file-list {
+  border-bottom: 1px solid var(--vscode-editorWidget-border);
+  padding: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  padding: 4px 0;
+}
+
+.file-icon {
+  margin-right: 8px;
+  width: 16px;
+  height: 16px;
+}
+
+.remove-file {
+  margin-left: auto;
+  cursor: pointer;
+  color: var(--vscode-errorForeground);
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
