@@ -202,16 +202,24 @@ function sendFileUpdates(webview: vscode.Webview) {
                 try {
                     buffer += chunk.toString();
                     const lines = buffer.split('\n');
-                    
+                    const parseStreamData = (data: string) => {
+                        try {
+                            return JSON.parse(data);
+                        } catch (e) {
+                            console.log('Partial JSON received:', data);
+                            return null;
+                        }
+                    };
                     for (let i = 0; i < lines.length - 1; i++) {
                         const line = lines[i].trim();
                         if (line === 'data: [DONE]') {
-                            webview.postMessage({ command: 'endLoading' }); // Добавляем здесь
+                            webview.postMessage({ command: 'endLoading' });
                             continue;
                         }
                         
                         if (line.startsWith('data: ')) {
-                            const data = JSON.parse(line.slice(6));
+                            const data = parseStreamData(line.slice(6));
+                            if (!data) continue;
                             const contentChunk = data.choices[0]?.delta?.content || '';
                             const reasoningChunk = data.choices[0]?.delta?.reasoning_content || '';
                             
@@ -265,7 +273,10 @@ function sendFileUpdates(webview: vscode.Webview) {
 
     function handleError(error: unknown) {
         if (axios.isAxiosError(error)) {
-            const message = error.response?.data?.error?.message || error.message;
+            let message = error.response?.data?.error?.message || error.message;
+            if (error.config?.headers?.Authorization) {
+                message = message.replace(error.config.headers.Authorization, '***');
+            }
             vscode.window.showErrorMessage(`DeepSeek API Error: ${message}`);
         } else if (error instanceof Error) {
             vscode.window.showErrorMessage(`Extension Error: ${error.message}`);
@@ -285,7 +296,7 @@ function sendFileUpdates(webview: vscode.Webview) {
     
     async function handleUserMessage(text: string, webview: vscode.Webview, context: vscode.ExtensionContext) {
         try {
-            webview.postMessage({ command: 'startLoading' }); // Добавляем это
+            webview.postMessage({ command: 'startLoading' });
             const config = vscode.workspace.getConfiguration('deepseekAssistant');
             await updateSystemContext();
             if (conversationHistory.length > 0) {
@@ -382,19 +393,11 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'removeFile':
                     const normalizedFileToRemove = normalizePath(message.file);
-                    
-                    // Сначала обновляем projectFiles
                     projectFiles = projectFiles.filter(f => normalizePath(f) !== normalizedFileToRemove);
-                    
-                    // Затем проверяем и очищаем currentFileContext
                     if (currentFileContext && normalizePath(currentFileContext) === normalizedFileToRemove) {
                         currentFileContext = undefined;
                     }
-                    
-                    // Сначала обновляем контекст
                     await updateSystemContext();
-                    
-                    // Потом обновляем UI
                     if (this._view?.visible) {
                         this.refreshWebviewState(this._view.webview);
                     }
@@ -402,8 +405,6 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
                     break;
             }
         });
-
-        // Инициализация начального состояния
         const editor = vscode.window.activeTextEditor;
         if (editor) {
             const initialFilePath = normalizePath(editor.document.uri.fsPath);
@@ -450,8 +451,7 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
                 ) === conversationHistory.indexOf(m)
             )
         });
-    
-        // Обновляем статус API ключа
+
         const config = vscode.workspace.getConfiguration('deepseekAssistant');
         webview.postMessage({
             command: 'updateApiKey',
@@ -460,26 +460,19 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
     }
 }
 
-// Создаем переменную для хранения провайдера
 let viewProvider: DeepSeekViewProvider;
 export async function activate(context: vscode.ExtensionContext) {
-    // Инициализируем провайдер
     viewProvider = new DeepSeekViewProvider(context);
-
-    // Регистрируем провайдер
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(
             'deepseek-assistant-view',
             viewProvider
         )
     );
-
     const savedState = context.workspaceState.get<ExtensionState>('chatState');
     if (savedState) {
         conversationHistory = savedState.conversationHistory;
         currentFileContext = savedState.currentFileContext;
-
-        // Восстанавливаем активный файл только если он валиден
         if (currentFileContext) {
             try {
                 await vscode.workspace.fs.stat(vscode.Uri.file(currentFileContext));
@@ -487,6 +480,14 @@ export async function activate(context: vscode.ExtensionContext) {
                 currentFileContext = undefined;
             }
         }
+        projectFiles = savedState.projectFiles.map(f => normalizePath(f)).filter(async f => {
+            try {
+                await vscode.workspace.fs.stat(vscode.Uri.file(f));
+                return true;
+            } catch {
+                return false;
+            }
+        });
         conversationHistory = savedState.conversationHistory.filter((msg, index, self) =>
             index === self.findIndex(m => 
                 m.role === msg.role && 
@@ -494,7 +495,6 @@ export async function activate(context: vscode.ExtensionContext) {
                 msg.content !== ''
             )
         );
-        // Принудительное обновление панели
         viewProvider.updateFiles([...projectFiles]);
         panel?.webview.postMessage({
             command: 'loadHistory',
@@ -514,15 +514,11 @@ export async function activate(context: vscode.ExtensionContext) {
             }
         })
     );
-    // Add event listener for active editor changes
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTextEditor(async editor => {
             if (!editor) return;
-            
             currentFileContext = normalizePath(editor.document.uri.fsPath);
             await updateSystemContext();
-            
-            // Обновляем файлы в боковой панели
             const filesToShow = [
                 currentFileContext,
                 ...projectFiles.filter(f => f !== currentFileContext)
@@ -542,7 +538,6 @@ export async function activate(context: vscode.ExtensionContext) {
                 vscode.window.showErrorMessage('Invalid DeepSeek API Key. Please update your settings.');
                 return;
             }
-
             if (!panel) {
                 panel = createWebviewPanel(context);
                 await updateSystemContext();
@@ -551,8 +546,6 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     );
     context.subscriptions.push(registerCommand);
-
-    // Добавляем команду для открытия настроек
     const openSettingsCommand = vscode.commands.registerCommand(
         'deepseek-assistant.openSettings',
         () => {
@@ -562,22 +555,20 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(openSettingsCommand);
 
     async function saveState(context: vscode.ExtensionContext) {
-        // Обрезаем историю до максимальной длины
         if (conversationHistory.length > MAX_HISTORY_LENGTH) {
             conversationHistory = [
-                conversationHistory[0], // Системный промпт
+                conversationHistory[0],
                 ...conversationHistory.slice(-MAX_HISTORY_LENGTH + 1)
             ];
         }
         
         const state: ExtensionState = {
             conversationHistory,
-            projectFiles: projectFiles.slice(-50), // Ограничиваем файлы до 50
+            projectFiles: projectFiles.slice(-50),
             currentFileContext
         };
         await context.workspaceState.update('chatState', state);
     }
-
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(async event => {
             if (event.affectsConfiguration('editor.tokenColorCustomizations') ||
@@ -599,7 +590,6 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Заменить на прямое обновление стилей webview
     if (panel) {
         updateWebviewStyles(panel.webview);
     }
