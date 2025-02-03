@@ -723,27 +723,30 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
         <body>
             <div class="toolbar">
                 <button onclick="addFiles()">Add Files</button>
-                    <div class="toolbar-right">
-                        <button onclick="clearHistory()">New chat</button>
-                        <button id="settingsButton" title="Открыть настройки">
-                            <i class="fas fa-cog"></i>
-                        </button>
-                    </div>
+                <div class="toolbar-right">
+                    <button onclick="clearHistory()">New chat</button>
+                    <button id="settingsButton" title="Открыть настройки">
+                        <i class="fas fa-cog"></i>
+                    </button>
+                </div>
             </div>
             <div id="context-files" class="context-files"></div>
-                <div id="chat"></div>
-                <div class="resizer" id="chatResizer"></div>
-                <div class="input-container">
-                    <div class="textarea-wrapper">
-                        <textarea id="input" placeholder="${apiKey ? 'Type your message...' : 'API key is not configured. Please set it in settings.'}" ${apiKey ? '' : 'disabled'}></textarea>
-                        <span class="enter-label">Enter ↵</span>
-                    </div>
-                    <div id="reasoning-container" class="reasoning-panel">
-                        <div class="reasoning-header">Chain of Thought</div>
-                        <div id="reasoning-content"></div>
-                    </div>
+            <div id="chat"></div>
+            <div class="resizer" id="chatResizer"></div>
+            <div class="input-container">
+                <div class="textarea-wrapper">
+                    <textarea id="input" placeholder="${apiKey ? 'Type your message...' : 'API key is not configured. Please set it in settings.'}" ${apiKey ? '' : 'disabled'}></textarea>
+                    <span class="enter-label">Enter ↵</span>
                 </div>
-    
+                <button class="toggle-button" onclick="toggleReasoning()">
+                    Reasoning
+                    <span class="arrow up">▲</span>
+                </button>
+                <div id="reasoning-container" class="reasoning-panel hidden">
+                    <div class="reasoning-header">Chain of Thought</div>
+                    <div id="reasoning-content"></div>
+                </div>
+            </div>
 
             <script src="${syntaxHighlightingCSS}"></script>
             <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -755,7 +758,7 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                 let currentAssistantMessage = null;
                 let reasoningBuffer = '';
                 let responseBuffer = '';
-        
+
                 document.querySelector('.enter-label').addEventListener('click', () => {
                     sendMessage();
                 });
@@ -764,7 +767,6 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                         if (lang && hljs.getLanguage(lang)) {
                             return hljs.highlight(code, { language: lang }).value;
                         }
-                        return hljs.highlightAuto(code).value;
                     }
                 });
 
@@ -826,7 +828,6 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                 });
 
                 function handleStream(data) {
-                    
                     if (!isStreaming && data.text) {
                         isStreaming = true;
                         currentAssistantMessage = addMessage('assistant', '');
@@ -934,6 +935,26 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                     vscode.postMessage({ command: 'abortRequest' });
                 }
 
+                function toggleReasoning() {
+                    const reasoningContainer = document.getElementById('reasoning-container');
+                    const arrow = document.querySelector('.toggle-button .arrow');
+                    if (reasoningContainer) {
+                        if (reasoningContainer.classList.contains('hidden')) {
+                            reasoningContainer.classList.remove('hidden');
+                            reasoningContainer.classList.add('visible');
+                            arrow.classList.remove('up');
+                            arrow.classList.add('down');
+                            vscode.setState({ isReasoningVisible: true });
+                        } else {
+                            reasoningContainer.classList.remove('visible');
+                            reasoningContainer.classList.add('hidden');
+                            arrow.classList.remove('down');
+                            arrow.classList.add('up');
+                            vscode.setState({ isReasoningVisible: false });
+                        }
+                    }
+                }
+
                 input.addEventListener('keydown', (e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault();
@@ -952,7 +973,6 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                     container.innerHTML = '';
 
                     if (contextFiles.length === 0) {
-
                         return;
                     }
 
@@ -997,16 +1017,38 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                 });
                 document.addEventListener('DOMContentLoaded', () => {
                     hljs.highlightAll();
+                    const state = vscode.getState();
+                    if (state && state.isReasoningVisible) {
+                        const reasoningContainer = document.getElementById('reasoning-container');
+                        const arrow = document.querySelector('.toggle-button .arrow');
+                        if (reasoningContainer && arrow) {
+                            reasoningContainer.classList.remove('hidden');
+                            reasoningContainer.classList.add('visible');
+                            arrow.classList.remove('up');
+                            arrow.classList.add('down');
+                        }
+                    }
                 });
                 let startY = 0;
                 let initialChatHeight = 0;
 
                 function startResize(e) {
                     isResizing = true;
+                    const chat = document.getElementById('chat');
+                    const toolbar = document.querySelector('.toolbar');
+                    const reasoningContainer = document.getElementById('reasoning-container');
+                    const chatRect = chat.getBoundingClientRect();
                     const containerRect = document.body.getBoundingClientRect();
-                    const additionalOffset = window.scrollY; // или вычислите нужный отступ динамически
-                    startY = e.clientY - containerRect.top - additionalOffset;
-                    startY = e.clientY - containerRect.top-250; 
+                    const toolbarHeight = toolbar ? toolbar.offsetHeight : 0;
+                    const reasoningOffset = reasoningContainer && !reasoningContainer.classList.contains('hidden') 
+                        ? reasoningContainer.offsetHeight 
+                        : 0;
+                    const offset = chatRect.top + containerRect.top + toolbarHeight + reasoningOffset + 4;
+                    startY = e.clientY - offset;
+                    console.log('e:', e);
+                    console.log('containerRect:', containerRect);
+                    console.log('window:', window);
+                    console.log('chatRect: ', chatRect);
                     initialChatHeight = chat.offsetHeight;
                     document.addEventListener('mousemove', resize);
                     document.addEventListener('mouseup', stopResize);
