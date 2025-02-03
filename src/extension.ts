@@ -1,16 +1,14 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import axios, { AxiosError } from 'axios';
 import { marked } from 'marked';
-import { sanitizeMarkdownText, applySyntaxHighlight } from './utils/textSanitizer';
+import { sanitizeMarkdownText } from './utils/textSanitizer';
 import hljs from 'highlight.js';
+const MAX_HISTORY_LENGTH = 200;
 
-interface DeepSeekResponse {
-    choices: {
-        message: {
-            content: string;
-            reasoning_content?: string;
-        };
-    }[];
+
+function normalizePath(filePath: string): string {
+    return path.normalize(filePath).replace(/\\/g, '/'); // Унификация разделителей
 }
 
 interface DeepSeekMessage {
@@ -25,63 +23,80 @@ interface DeepSeekRequest {
     stream?: boolean;
 }
 
-export function activate(context: vscode.ExtensionContext) {
-    let panel: vscode.WebviewPanel | undefined;
-    let conversationHistory: DeepSeekMessage[] = [];
-    let currentStream: AbortController | undefined;
-    let currentAssistantContent = '';
-    let projectFiles: string[] = [];
+let conversationHistory: DeepSeekMessage[] = [];
+let currentStream: AbortController | undefined;
+let currentAssistantContent = '';
+let projectFiles: string[] = [];
+let currentFileContext: string | undefined;
+let panel: vscode.WebviewPanel | undefined;
 
-    const registerCommand = vscode.commands.registerCommand(
-        'deepseek-assistant.openChat',
-        async () => {
-            if (!panel) {
-                panel = createWebviewPanel(context);
-                await updateSystemContext();
-            }
-            panel.reveal(vscode.ViewColumn.Beside);
+async function updateSystemContext() {
+    if (currentFileContext) {
+        try {
+            await vscode.workspace.fs.stat(vscode.Uri.file(currentFileContext));
+        } catch {
+            currentFileContext = undefined;
         }
-    );
+    }
 
-    context.subscriptions.push(registerCommand);
+    const codeContext = await buildCodeContext(currentFileContext, projectFiles);
 
-    async function updateSystemContext() {
-        const editor = vscode.window.activeTextEditor;
-        let codeContext = '';
-
-        if (editor) {
-            const doc = editor.document;
-            codeContext += `Current File: ${doc.fileName}\nLanguage: ${doc.languageId}\n\`\`\`${doc.languageId}\n${doc.getText()}\n\`\`\`\n\n`;
-        }
-
-        if (projectFiles.length > 0) {
-            codeContext += "Project Files Context:\n";
-            for (const filePath of projectFiles) {
-                try {
-                    const uri = vscode.Uri.file(filePath);
-                    const doc = await vscode.workspace.openTextDocument(uri);
-                    const lang = doc.languageId;
-                    const content = sanitizeMarkdownText(doc.getText());
-                    codeContext += `File: ${filePath}\n\`\`\`${lang}\n${content}\n\`\`\`\n\n`;
-                } catch (error) {
-                    console.error(`Error reading file ${filePath}:`, error);
-                }
-            }
-        }
-
-        conversationHistory = conversationHistory.filter(m => m.role !== 'system');
-        conversationHistory.unshift({
+    conversationHistory = [
+        {
             role: 'system',
             content: `You are an expert programming assistant. Follow these rules:
             1. Provide concise, professional answers
             2. Always format code blocks with syntax highlighting
             3. Always answer in language of user
             4. Current code context:\n${codeContext}`
-        });
+        },
+        ...conversationHistory.filter(m => m.role !== 'system')
+    ];
+}
+
+async function buildCodeContext(currentFile: string | undefined, projectFiles: string[]): Promise<string> {
+    let codeContext = '';
+    
+    // Текущий файл 
+    if (currentFile) {
+        try {
+            const normalizedCurrent = normalizePath(currentFile);
+            const doc = await vscode.workspace.openTextDocument(normalizedCurrent);
+            codeContext += `Current File: ${normalizedCurrent}\n\`\`\`${doc.languageId}\n${doc.getText()}\n\`\`\`\n\n`;
+        } catch (error) {
+            console.error('Error reading current file:', error);
+        }
     }
 
+    // Добавленные файлы (без текущего)
+    for (const filePath of projectFiles.filter(f => normalizePath(f) !== normalizePath(currentFile || ''))) {
+        try {
+            const normalizedPath = normalizePath(filePath);
+            const doc = await vscode.workspace.openTextDocument(normalizedPath);
+            codeContext += `Project File: ${normalizedPath}\n\`\`\`${doc.languageId}\n${sanitizeMarkdownText(doc.getText())}\n\`\`\`\n\n`;
+        } catch (error) {
+            console.error('Error reading project file:', error);
+        }
+    }
+
+    return codeContext;
+}
+
+function sendFileUpdates(webview: vscode.Webview) {
+    const filesToShow = [
+        ...(currentFileContext ? [normalizePath(currentFileContext)] : []),
+        ...projectFiles.map(f => normalizePath(f))
+            .filter(f => f !== normalizePath(currentFileContext || ''))
+    ];
+    webview.postMessage({
+        command: 'updateFiles',
+        files: filesToShow
+    });
+}
+
+
     function createWebviewPanel(context: vscode.ExtensionContext): vscode.WebviewPanel {
-        let panel: vscode.WebviewPanel | undefined;
+        
         panel = vscode.window.createWebviewPanel(
             'deepseekChat',
             'DeepSeek Assistant Pro',
@@ -93,13 +108,13 @@ export function activate(context: vscode.ExtensionContext) {
             }
         );
 
-        panel.webview.html = getWebviewContent(context, panel.webview);
-
+        panel.webview.html = getWebviewContentForView(context, panel.webview);
+        sendFileUpdates(panel.webview);
         panel.webview.onDidReceiveMessage(async message => {
             switch (message.command) {
                 case 'sendMessage':
                     if (panel) {
-                      await handleUserMessage(message.text, panel.webview);
+                      await handleUserMessage(message.text, panel.webview, context);
                     }
                     break;
                 case 'clearHistory':
@@ -108,16 +123,28 @@ export function activate(context: vscode.ExtensionContext) {
                     await updateSystemContext();
                     if (panel) {
                       panel.webview.postMessage({ command: 'clearChat' });
+                      sendFileUpdates(panel.webview);
                     }
                     break;
                 case 'addFiles':
                     if (panel) {
-                      await handleAddFiles(panel.webview);
+                      await handleAddFiles(panel.webview, context);
                     }
                     break;
                 case 'abortRequest':
                     currentStream?.abort();
                     currentStream = undefined;
+                    break;
+                case 'removeFile':
+                    projectFiles = projectFiles.filter(f => f !== message.file);
+                    if (currentFileContext === message.file) {
+                        currentFileContext = undefined;
+                    }
+                    await updateSystemContext();
+                    if (panel) {
+                        sendFileUpdates(panel.webview);
+                    }
+                    await saveState(context);
                     break;
             }
         });
@@ -131,53 +158,30 @@ export function activate(context: vscode.ExtensionContext) {
         return panel;
     }
 
-    async function handleAddFiles(webview: vscode.Webview) {
+    async function handleAddFiles(webview: vscode.Webview, context: vscode.ExtensionContext) {
         const uris = await vscode.window.showOpenDialog({
             canSelectMany: true,
-            openLabel: 'Add to Context',
-            filters: { 'Code Files': ['*'] }
+            openLabel: 'Add to Context'
         });
-
-        if (uris) {
-            projectFiles.push(...uris.map(uri => uri.fsPath));
+    
+        if (uris?.length) {
+            // Фильтруем уже добавленные файлы и текущий
+            const newFiles = uris
+                .map(uri => normalizePath(uri.fsPath))
+                .filter(f => 
+                    f !== normalizePath(currentFileContext || '') && // Исключить текущий
+                    !projectFiles.some(pf => normalizePath(pf) === f) // Исключить дубли
+                );
+                
+            projectFiles.push(...newFiles);
             await updateSystemContext();
-            if (panel) {
-                panel.webview.postMessage({
-                    command: 'showStatus',
-                    text: `Added ${uris.length} files to context`
-                });
-            }
+            sendFileUpdates(webview);
         }
+        //await saveState(context);
     }
 
-    async function handleUserMessage(text: string, webview: vscode.Webview) {
-        try {
-            const config = vscode.workspace.getConfiguration('deepseekAssistant');
-            conversationHistory.push({ role: 'user', content: text });
-
-            const request: DeepSeekRequest = {
-                model: config.get('model', 'deepseek-reasoner'),
-                messages: conversationHistory,
-                max_tokens: config.get('maxTokens', 2000),
-                stream: config.get('streaming', true)
-            };
-
-            currentStream = new AbortController();
-            currentAssistantContent = '';
-
-            if (request.stream) {
-                await handleStreamingRequest(request, webview);
-            } else {
-                await handleStandardRequest(request, webview);
-            }
-        } catch (error) {
-            handleError(error);
-        } finally {
-            currentStream = undefined;
-        }
-    }
-
-    async function handleStreamingRequest(request: DeepSeekRequest, webview: vscode.Webview) {
+    async function handleStreamingRequest(request: DeepSeekRequest, webview: vscode.Webview, context: vscode.ExtensionContext) {
+        request.model = "deepseek-reasoner"; // Зашиваем модель
         let buffer = '';
         try {
             const config = vscode.workspace.getConfiguration('deepseekAssistant');
@@ -201,7 +205,10 @@ export function activate(context: vscode.ExtensionContext) {
                     
                     for (let i = 0; i < lines.length - 1; i++) {
                         const line = lines[i].trim();
-                        if (!line || line === 'data: [DONE]') continue;
+                        if (line === 'data: [DONE]') {
+                            webview.postMessage({ command: 'endLoading' }); // Добавляем здесь
+                            continue;
+                        }
                         
                         if (line.startsWith('data: ')) {
                             const data = JSON.parse(line.slice(6));
@@ -210,7 +217,6 @@ export function activate(context: vscode.ExtensionContext) {
                             
                             if (contentChunk || reasoningChunk) {
                                 currentAssistantContent += contentChunk;
-                                //console.log('Sending chunk:', { contentChunk, reasoningChunk }); // Debug log
                                 webview.postMessage({
                                     command: 'streamResponse',
                                     text: contentChunk,
@@ -222,27 +228,36 @@ export function activate(context: vscode.ExtensionContext) {
                     }
                     buffer = lines[lines.length - 1];
                 } catch (e) {
+                    webview.postMessage({ command: 'endLoading' }); 
                     console.error('Stream processing error:', e);
                 }
             });
 
             response.data.on('end', () => {
-                conversationHistory.push({ role: 'assistant', content: currentAssistantContent });
                 webview.postMessage({
                     command: 'streamResponse',
                     text: '',
                     reasoning: '',
                     isFinal: true
                 });
+                setTimeout(async () => {
+                    conversationHistory.push({ 
+                        role: 'assistant', 
+                        content: currentAssistantContent 
+                    });
+                    await saveState(context);
+                }, 500);
             });
 
             response.data.on('error', (error: Error) => {
                 console.error('Stream error:', error);
+                webview.postMessage({ command: 'endLoading' }); 
                 handleError(error);
             });
 
         } catch (error) {
             if (!axios.isCancel(error)) {
+                webview.postMessage({ command: 'endLoading' }); 
                 handleError(error);
             }
         }
@@ -258,44 +273,448 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.window.showErrorMessage('Unknown error occurred');
         }
     }
-
-    async function handleStandardRequest(request: DeepSeekRequest, webview: vscode.Webview) {
+    
+    async function saveState(context: vscode.ExtensionContext) {
+        const state: ExtensionState = {
+            conversationHistory: [...conversationHistory],
+            projectFiles: [...projectFiles],
+            currentFileContext
+        };
+        await context.workspaceState.update('chatState', state);
+    }
+    
+    async function handleUserMessage(text: string, webview: vscode.Webview, context: vscode.ExtensionContext) {
         try {
+            webview.postMessage({ command: 'startLoading' }); // Добавляем это
             const config = vscode.workspace.getConfiguration('deepseekAssistant');
-            const response = await axios.post<DeepSeekResponse>(
-                config.get('endpoint', 'https://api.deepseek.com/v1/chat/completions'),
-                request,
-                {
-                    headers: {
-                        Authorization: `Bearer ${config.get('apiKey')}`,
-                        'Content-Type': 'application/json'
-                    }
+            await updateSystemContext();
+            if (conversationHistory.length > 0) {
+                const lastMessage = conversationHistory[conversationHistory.length - 1];
+                if (lastMessage.role === 'user') {
+                    conversationHistory.pop();
                 }
-            );
-
-            const result = response.data.choices[0].message;
-            conversationHistory.push({ role: 'assistant', content: result.content });
-            
-            webview.postMessage({
-                command: 'receiveResponse',
-                text: result.content,
-                reasoning: result.reasoning_content
-            });
-
+            }
+            conversationHistory.push({ role: 'user', content: text });
+    
+            const request: DeepSeekRequest = {
+                model: config.get('model', 'deepseek-reasoner'),
+                messages: conversationHistory,
+                max_tokens: config.get('maxTokens', 2000),
+                stream: true,
+            };
+    
+            currentStream = new AbortController();
+            currentAssistantContent = '';
+            await handleStreamingRequest(request, webview, context);
         } catch (error) {
             handleError(error);
+            webview.postMessage({ command: 'endLoading' });
+        } finally {
+            currentStream = undefined;
+            await saveState(context);
         }
+    }
+
+class DeepSeekViewProvider implements vscode.WebviewViewProvider {
+    private _view?: vscode.WebviewView;
+    private readonly context: vscode.ExtensionContext;
+
+    constructor(context: vscode.ExtensionContext) {
+        this.context = context;
+    }
+
+    public resolveWebviewView(
+        webviewView: vscode.WebviewView,
+        _context: vscode.WebviewViewResolveContext,
+        _token: vscode.CancellationToken,
+    ) {
+        this._view = webviewView;
+        webviewView.webview.options = {
+            enableScripts: true,
+            localResourceRoots: [this.context.extensionUri]
+        };
+        webviewView.onDidChangeVisibility(() => {
+            if (webviewView.visible) {
+                this.refreshWebviewState(webviewView.webview);
+            }
+        });
+        this.updateFiles([
+            ...(currentFileContext ? [currentFileContext] : []),
+            ...projectFiles.filter(f => f !== currentFileContext)
+        ]);
+        webviewView.webview.html = getWebviewContentForView(this.context, webviewView.webview);
+        webviewView.webview.postMessage({
+            command: 'loadHistory',
+            history: conversationHistory.filter(m => 
+                m.role !== 'system' && 
+                // Фильтр дубликатов
+                conversationHistory.findIndex(msg => 
+                    msg.content === m.content
+                ) === conversationHistory.indexOf(m)
+            )
+        });
+
+        webviewView.webview.onDidReceiveMessage(async message => {
+            switch (message.command) {
+                case 'openSettings':
+                    vscode.commands.executeCommand('deepseek-assistant.openSettings');
+                    break;
+                case 'sendMessage':
+                    await handleUserMessage(message.text, webviewView.webview, this.context);
+                    break;
+                case 'clearHistory':
+                    conversationHistory = [];
+                    projectFiles = currentFileContext ? [currentFileContext] : [];
+                    await updateSystemContext();
+                    webviewView.webview.postMessage({ command: 'clearChat' });
+                    webviewView.webview.postMessage({ 
+                        command: 'updateFiles',
+                        files: projectFiles
+                    });
+                    await saveState(this.context);
+                    break;
+                case 'addFiles':
+                    await handleAddFiles(webviewView.webview, this.context);
+                    break;
+                case 'abortRequest':
+                    currentStream?.abort();
+                    currentStream = undefined;
+                    break;
+                case 'removeFile':
+                    const normalizedFileToRemove = normalizePath(message.file);
+                    
+                    // Сначала обновляем projectFiles
+                    projectFiles = projectFiles.filter(f => normalizePath(f) !== normalizedFileToRemove);
+                    
+                    // Затем проверяем и очищаем currentFileContext
+                    if (currentFileContext && normalizePath(currentFileContext) === normalizedFileToRemove) {
+                        currentFileContext = undefined;
+                    }
+                    
+                    // Сначала обновляем контекст
+                    await updateSystemContext();
+                    
+                    // Потом обновляем UI
+                    if (this._view?.visible) {
+                        this.refreshWebviewState(this._view.webview);
+                    }
+                    await saveState(this.context);
+                    break;
+            }
+        });
+
+        // Инициализация начального состояния
+        const editor = vscode.window.activeTextEditor;
+        if (editor) {
+            const initialFilePath = normalizePath(editor.document.uri.fsPath);
+            currentFileContext = initialFilePath;
+            const filesToShow = [
+                currentFileContext,
+                ...projectFiles.filter(f => f !== currentFileContext)
+            ];
+            this.updateFiles(filesToShow);
+        }
+    }
+
+    public updateApiKey(apiKey: string) {
+        if (this._view) {
+            this._view.webview.postMessage({ command: 'updateApiKey', apiKey });
+        }
+    }
+
+    public updateFiles(files: string[]) {
+        if (this._view) {
+            this._view.webview.postMessage({
+                command: 'updateFiles',
+                files: files
+            });
+        }
+    }
+    private refreshWebviewState(webview: vscode.Webview) {
+        if (!webview) return;
+    
+        // Обновляем файлы
+        const filesToShow = [
+            ...(currentFileContext ? [currentFileContext] : []),
+            ...projectFiles.filter(f => f !== currentFileContext)
+        ];
+        this.updateFiles(filesToShow);
+    
+        // Обновляем историю чата
+        webview.postMessage({
+            command: 'loadHistory',
+            history: conversationHistory.filter(m => 
+                m.role !== 'system' && 
+                conversationHistory.findIndex(msg => 
+                    msg.content === m.content
+                ) === conversationHistory.indexOf(m)
+            )
+        });
+    
+        // Обновляем статус API ключа
+        const config = vscode.workspace.getConfiguration('deepseekAssistant');
+        webview.postMessage({
+            command: 'updateApiKey',
+            apiKey: config.get('apiKey', '')
+        });
     }
 }
 
-function getWebviewContent(context: vscode.ExtensionContext, webview: vscode.Webview): string {
+// Создаем переменную для хранения провайдера
+let viewProvider: DeepSeekViewProvider;
+export async function activate(context: vscode.ExtensionContext) {
+    // Инициализируем провайдер
+    viewProvider = new DeepSeekViewProvider(context);
+
+    // Регистрируем провайдер
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider(
+            'deepseek-assistant-view',
+            viewProvider
+        )
+    );
+
+    const savedState = context.workspaceState.get<ExtensionState>('chatState');
+    if (savedState) {
+        conversationHistory = savedState.conversationHistory;
+        currentFileContext = savedState.currentFileContext;
+
+        // Восстанавливаем активный файл только если он валиден
+        if (currentFileContext) {
+            try {
+                await vscode.workspace.fs.stat(vscode.Uri.file(currentFileContext));
+            } catch {
+                currentFileContext = undefined;
+            }
+        }
+        conversationHistory = savedState.conversationHistory.filter((msg, index, self) =>
+            index === self.findIndex(m => 
+                m.role === msg.role && 
+                m.content === msg.content &&
+                msg.content !== ''
+            )
+        );
+        // Принудительное обновление панели
+        viewProvider.updateFiles([...projectFiles]);
+        panel?.webview.postMessage({
+            command: 'loadHistory',
+            history: conversationHistory.filter(m => m.role !== 'system')
+        });
+    }
+
+    context.subscriptions.push(
+        vscode.window.onDidChangeWindowState(e => {
+            if (e.active ) {
+                if (panel) {
+                    panel.webview.postMessage({
+                        command: 'loadHistory',
+                        history: conversationHistory.filter(m => m.role !== 'system')
+                    });
+                }
+            }
+        })
+    );
+    // Add event listener for active editor changes
+    context.subscriptions.push(
+        vscode.window.onDidChangeActiveTextEditor(async editor => {
+            if (!editor) return;
+            
+            currentFileContext = normalizePath(editor.document.uri.fsPath);
+            await updateSystemContext();
+            
+            // Обновляем файлы в боковой панели
+            const filesToShow = [
+                currentFileContext,
+                ...projectFiles.filter(f => f !== currentFileContext)
+            ];
+            viewProvider.updateFiles(filesToShow);
+            await saveState(context); 
+        })
+    );
+
+    const registerCommand = vscode.commands.registerCommand(
+        'deepseek-assistant.openChat',
+        async () => {
+            const config = vscode.workspace.getConfiguration('deepseekAssistant');
+            const apiKey = config.get('apiKey', '');
+            const isValid = await isApiKeyValid(apiKey);
+            if (!isValid) {
+                vscode.window.showErrorMessage('Invalid DeepSeek API Key. Please update your settings.');
+                return;
+            }
+
+            if (!panel) {
+                panel = createWebviewPanel(context);
+                await updateSystemContext();
+            }
+            panel.reveal(vscode.ViewColumn.Beside);
+        }
+    );
+    context.subscriptions.push(registerCommand);
+
+    // Добавляем команду для открытия настроек
+    const openSettingsCommand = vscode.commands.registerCommand(
+        'deepseek-assistant.openSettings',
+        () => {
+            vscode.commands.executeCommand('workbench.action.openSettings', 'deepseekAssistant');
+        }
+    );
+    context.subscriptions.push(openSettingsCommand);
+
+    async function saveState(context: vscode.ExtensionContext) {
+        // Обрезаем историю до максимальной длины
+        if (conversationHistory.length > MAX_HISTORY_LENGTH) {
+            conversationHistory = [
+                conversationHistory[0], // Системный промпт
+                ...conversationHistory.slice(-MAX_HISTORY_LENGTH + 1)
+            ];
+        }
+        
+        const state: ExtensionState = {
+            conversationHistory,
+            projectFiles: projectFiles.slice(-50), // Ограничиваем файлы до 50
+            currentFileContext
+        };
+        await context.workspaceState.update('chatState', state);
+    }
+
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(async event => {
+            if (event.affectsConfiguration('editor.tokenColorCustomizations') ||
+                event.affectsConfiguration('workbench.colorCustomizations')) {
+                if (panel) {
+                    updateWebviewStyles(panel.webview);
+                }
+            }
+            if (event.affectsConfiguration('deepseekAssistant.apiKey')) {
+                const config = vscode.workspace.getConfiguration('deepseekAssistant');
+                const apiKey = config.get('apiKey', '');
+                const isValid = await isApiKeyValid(apiKey);
+                if (isValid) {
+                    viewProvider.updateApiKey(apiKey);
+                } else {
+                    vscode.window.showErrorMessage('Invalid DeepSeek API Key. Please update your settings.');
+                }
+            }
+        })
+    );
+
+    // Заменить на прямое обновление стилей webview
+    if (panel) {
+        updateWebviewStyles(panel.webview);
+    }
+}
+
+async function isApiKeyValid(apiKey: string): Promise<boolean> {
+    try {
+        const response = await axios.get(
+            'https://api.deepseek.com/user/balance',
+            {
+                headers: {
+                    Authorization: `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                }
+            }
+        );
+        return response.status === 200 && response.data.is_available === true;
+    } catch (error) {
+        return false;
+    }
+}
+
+function generateSyntaxHighlightingCSS(): string {
+    const tokenColors = vscode.workspace.getConfiguration('editor').get('tokenColorCustomizations.textMateRules', []);
+    const workbenchColors = vscode.workspace.getConfiguration('workbench').get('colorCustomizations', {});
+    const editorConfig = vscode.workspace.getConfiguration('editor');
+    const fontSize = editorConfig.get('fontSize', 14);
+    
+    let css = `
+        pre code {
+            font-family: var(--vscode-editor-font-family) !important;
+            font-size: ${fontSize}px !important;
+            line-height: 1.4 !important;
+        }
+        .hljs {
+            background: var(--vscode-editor-background) !important;
+            color: var(--vscode-editor-foreground) !important;
+        }
+        /* Базовые токены */
+        .hljs-keyword { color: var(--vscode-symbolIcon-keywordForeground) !important; }
+        .hljs-built_in { color: var(--vscode-symbolIcon-keywordForeground) !important; }
+        .hljs-type { color: var(--vscode-symbolIcon-typeParameterForeground) !important; }
+        .hljs-literal { color: var(--vscode-debugTokenExpression-boolean) !important; }
+        .hljs-number { color: var(--vscode-debugTokenExpression-number) !important; }
+        .hljs-string { color: var(--vscode-debugTokenExpression-string) !important; }
+        .hljs-regexp { color: var(--vscode-debugTokenExpression-string) !important; }
+        
+        /* Комментарии и документация */
+        .hljs-comment { color: var(--vscode-editorLineNumber-foreground) !important; }
+        .hljs-doctag { color: var(--vscode-editorLineNumber-foreground) !important; }
+        
+        /* Функции и классы */
+        .hljs-function { color: var(--vscode-symbolIcon-functionForeground) !important; }
+        .hljs-class { color: var(--vscode-symbolIcon-classForeground) !important; }
+        .hljs-title { color: var(--vscode-symbolIcon-functionForeground) !important; }
+        .hljs-title.class_ { color: var(--vscode-symbolIcon-classForeground) !important; }
+        .hljs-title.function_ { color: var(--vscode-symbolIcon-functionForeground) !important; }
+        
+        /* Переменные и параметры */
+        .hljs-variable { color: var(--vscode-symbolIcon-variableForeground) !important; }
+        .hljs-params { color: var(--vscode-symbolIcon-parameterForeground) !important; }
+        .hljs-attr { color: var(--vscode-symbolIcon-propertyForeground) !important; }
+        .hljs-property { color: var(--vscode-symbolIcon-propertyForeground) !important; }
+        
+        /* Операторы и пунктуация */
+        .hljs-operator { color: var(--vscode-symbolIcon-operatorForeground) !important; }
+        .hljs-punctuation { color: var(--vscode-editor-foreground) !important; }
+        
+        /* Импорты и модули */
+        .hljs-meta { color: var(--vscode-symbolIcon-moduleForeground) !important; }
+        .hljs-meta-keyword { color: var(--vscode-symbolIcon-keywordForeground) !important; }
+        .hljs-meta-string { color: var(--vscode-debugTokenExpression-string) !important; }
+        
+        /* Специальные токены */
+        .hljs-emphasis { font-style: italic !important; }
+        .hljs-strong { font-weight: bold !important; }
+        .hljs-link { color: var(--vscode-textLink-foreground) !important; }
+        .hljs-quote { color: var(--vscode-editorLineNumber-foreground) !important; }
+        .hljs-template-tag { color: var(--vscode-symbolIcon-snippetForeground) !important; }
+        .hljs-template-variable { color: var(--vscode-symbolIcon-variableForeground) !important; }
+        .hljs-addition { color: var(--vscode-gitDecoration-addedResourceForeground) !important; }
+        .hljs-deletion { color: var(--vscode-gitDecoration-deletedResourceForeground) !important; }
+    `;
+
+    tokenColors.forEach((rule: any) => {
+        if (rule.scope && rule.settings.foreground) {
+            css += `
+                .hljs-${rule.scope.replace(/\./g, '-')} {
+                    color: ${rule.settings.foreground};
+                }
+            `;
+        }
+    });
+
+    return css;
+}
+
+function updateWebviewStyles(webview: vscode.Webview) {
+    const css = generateSyntaxHighlightingCSS();
+    webview.postMessage({ 
+        command: 'updateStyles', 
+        styles: css 
+    });
+}
+
+function getWebviewContentForView(context: vscode.ExtensionContext, webview: vscode.Webview): string {
     const stylesUri = webview.asWebviewUri(
         vscode.Uri.joinPath(context.extensionUri, 'media', 'styles.css')
     );
-    
-    const highlightJsUri = webview.asWebviewUri(
-        vscode.Uri.joinPath(context.extensionUri, 'media', 'highlight.min.js')
-    );
+
+    const syntaxHighlightingCSS = generateSyntaxHighlightingCSS();
+
+
+    const config = vscode.workspace.getConfiguration('deepseekAssistant');
+    const apiKey = config.get('apiKey', '');
 
     return `
         <!DOCTYPE html>
@@ -306,28 +725,37 @@ function getWebviewContent(context: vscode.ExtensionContext, webview: vscode.Web
             <link href="${stylesUri}" rel="stylesheet">
             <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
             <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css">
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+            <style>
+                ${syntaxHighlightingCSS}
+            </style>
         </head>
         <body>
             <div class="toolbar">
                 <button onclick="addFiles()">Add Files</button>
-                <button onclick="clearHistory()" style="margin-left: auto">Clear</button>
+                    <div class="toolbar-right">
+                        <button onclick="clearHistory()">New chat</button>
+                        <button id="settingsButton" title="Открыть настройки">
+                            <i class="fas fa-cog"></i>
+                        </button>
+                    </div>
             </div>
-            
-            <div id="chat"></div>
-            <div class="input-container">
-                <textarea id="input" placeholder="Type your message..."></textarea>
-                <div id="reasoning-container" class="reasoning-panel">
-                    <div class="reasoning-header">Chain of Thought</div>
-                    <div id="reasoning-content"></div>
+            <div id="context-files" class="context-files"></div>
+                <div id="chat"></div>
+                <div class="resizer" id="chatResizer"></div>
+                <div class="input-container">
+                    <div class="textarea-wrapper">
+                        <textarea id="input" placeholder="${apiKey ? 'Type your message...' : 'API key is not configured. Please set it in settings.'}" ${apiKey ? '' : 'disabled'}></textarea>
+                        <span class="enter-label">Enter ↵</span>
+                    </div>
+                    <div id="reasoning-container" class="reasoning-panel">
+                        <div class="reasoning-header">Chain of Thought</div>
+                        <div id="reasoning-content"></div>
+                    </div>
                 </div>
-                <div id="status"></div>
-                <div>
-                    <button onclick="sendMessage()">Send</button>
-                    <button onclick="abortRequest()" id="abortBtn" style="display: none">Stop</button>
-                </div>
-            </div>
+    
 
-            <script src="${highlightJsUri}"></script>
+            <script src="${syntaxHighlightingCSS}"></script>
             <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
             <script>
                 const vscode = acquireVsCodeApi();
@@ -337,7 +765,10 @@ function getWebviewContent(context: vscode.ExtensionContext, webview: vscode.Web
                 let currentAssistantMessage = null;
                 let reasoningBuffer = '';
                 let responseBuffer = '';
-
+        
+                document.querySelector('.enter-label').addEventListener('click', () => {
+                    sendMessage();
+                });
                 marked.setOptions({
                     highlight: (code, lang) => {
                         if (lang && hljs.getLanguage(lang)) {
@@ -364,16 +795,51 @@ function getWebviewContent(context: vscode.ExtensionContext, webview: vscode.Web
                             chat.innerHTML = '';
                             document.getElementById('reasoning-content').innerHTML = '';
                             break;
+                        case 'updateFiles':
+                            contextFiles = event.data.files || [];
+                            updateContextFiles();
+                            break;
+                        case 'updateApiKey':
+                            apiKey = event.data.apiKey;
+                            input.placeholder = 'Type your message...';
+                            input.disabled = false;
+                            break;
+                        case 'loadHistory':
+                            event.data.history.forEach(msg => {
+                                if (msg.role !== 'system') {
+                                    addMessage(msg.role, msg.content);
+                                }
+                            });
+                            hljs.highlightAll();
+                            break;
+                        case 'startLoading':
+                            input.disabled = true;
+                            const loadingDiv = document.createElement('div');
+                            loadingDiv.className = 'loading-dots';
+                            loadingDiv.innerHTML = '<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
+                            chat.appendChild(loadingDiv);
+                            chat.scrollTop = chat.scrollHeight;
+                            break;
+                        case 'endLoading':
+                            input.disabled = false;
+                            const loadingElements = document.getElementsByClassName('loading-dots');
+                            if (loadingElements.length > 0) {
+                                loadingElements[0].remove();
+                            }
+                            break;
+                        case 'updateStyles':
+                            const styleElement = document.createElement('style');
+                            styleElement.textContent = event.data.styles;
+                            document.head.appendChild(styleElement);
+                            break;
                     }
                 });
 
                 function handleStream(data) {
-                    console.log('Received stream data:', data); // Debug log
                     
                     if (!isStreaming && data.text) {
                         isStreaming = true;
                         currentAssistantMessage = addMessage('assistant', '');
-                        document.getElementById('abortBtn').style.display = 'inline-block';
                     }
                     
                     if (data.text) {
@@ -384,10 +850,16 @@ function getWebviewContent(context: vscode.ExtensionContext, webview: vscode.Web
                     if (data.reasoning) {
                         reasoningBuffer += data.reasoning;
                         updateReasoningContent(reasoningBuffer);
+                        const reasoningContainer = document.getElementById('reasoning-container');
+                        if (reasoningContainer) {
+                            reasoningContainer.scrollTo({
+                                top: reasoningContainer.scrollHeight,
+                                behavior: 'smooth'
+                            });
+                        }
                     }
 
                     if (data.isFinal) {
-                        document.getElementById('abortBtn').style.display = 'none';
                         isStreaming = false;
                         responseBuffer = '';
                         reasoningBuffer = '';
@@ -425,6 +897,24 @@ function getWebviewContent(context: vscode.ExtensionContext, webview: vscode.Web
                         const contentDiv = currentAssistantMessage.querySelector('.content');
                         if (contentDiv) {
                             contentDiv.innerHTML = marked.parse(text);
+                            
+                            // Добавляем кнопки копирования ко всем блокам кода
+                            contentDiv.querySelectorAll('pre').forEach(pre => {
+                                pre.style.position = 'relative'; // Явно задаем позиционирование
+                                if (!pre.querySelector('.copy-button')) {
+                                    const button = document.createElement('button');
+                                    button.className = 'copy-button';
+                                    button.textContent = 'Copy';
+                                    button.style.position = 'absolute';
+                                    button.style.top = '8px';
+                                    button.style.right = '8px';
+                                    button.onclick = async (e) => {
+                                        // ...existing code...
+                                    };
+                                    pre.insertBefore(button, pre.firstChild); // Меняем способ добавления
+                                }
+                            });
+                            
                             hljs.highlightAll();
                             chat.scrollTop = chat.scrollHeight;
                         }
@@ -460,8 +950,123 @@ function getWebviewContent(context: vscode.ExtensionContext, webview: vscode.Web
                         sendMessage();
                     }
                 });
+
+                let contextFiles = [];
+
+                function updateContextFiles() {
+                    const container = document.getElementById('context-files');
+                    if (!container) {
+                        console.warn('Context files container not found');
+                        return;
+                    }
+                    container.innerHTML = '';
+
+                    if (contextFiles.length === 0) {
+
+                        return;
+                    }
+
+                    contextFiles.forEach((file, index) => {
+                        const fileEl = document.createElement('div');
+                        const fileSpan = document.createElement('span');
+                        const removeSpan = document.createElement('span');
+
+                        fileEl.className = 'context-file';
+                        fileSpan.textContent = getFileName(file);
+                        fileSpan.title = file;
+
+                        removeSpan.className = 'remove';
+                        removeSpan.textContent = '×';
+                        removeSpan.onclick = () => removeFile(file);
+
+                        // Первый файл в списке — текущий
+                        if (index === 0) {
+                            fileEl.classList.add('current-file');
+                        }
+
+                        fileEl.appendChild(fileSpan);
+                        fileEl.appendChild(removeSpan); // Добавляем крестик для всех файлов
+
+                        container.appendChild(fileEl);
+                    });
+                }
+
+                // Корректное извлечение имени файла из пути
+                function getFileName(path) {
+                    return path.split(/[\\/]/).pop() || path; // Работает для Windows и Unix
+                }
+
+                function removeFile(file) {
+                    contextFiles = contextFiles.filter(f => f !== file);
+                    updateContextFiles();
+                    vscode.postMessage({ command: 'removeFile', file });
+                }
+
+                document.getElementById('settingsButton').addEventListener('click', () => {
+                    vscode.postMessage({ command: 'openSettings' });
+                });
+                document.addEventListener('DOMContentLoaded', () => {
+                    hljs.highlightAll();
+                });
+                let startY = 0;
+                let initialChatHeight = 0;
+
+                function startResize(e) {
+                    isResizing = true;
+                    const containerRect = document.body.getBoundingClientRect();
+                    const additionalOffset = window.scrollY; // или вычислите нужный отступ динамически
+                    startY = e.clientY - containerRect.top - additionalOffset;
+                    startY = e.clientY - containerRect.top-250; 
+                    initialChatHeight = chat.offsetHeight;
+                    document.addEventListener('mousemove', resize);
+                    document.addEventListener('mouseup', stopResize);
+                    document.body.style.userSelect = 'none';
+                }
+
+                function resize(e) {
+                    if (!isResizing) return;
+                    
+                    const delta = startY - e.clientY;
+                    const containerHeight = document.body.offsetHeight;
+                    const minHeight = 50;
+                    
+                    let newChatHeight = initialChatHeight - delta;
+
+                    
+                    // Ограничения
+                    newChatHeight = Math.max(minHeight, newChatHeight);
+                    newChatHeight = Math.min(newChatHeight, containerHeight - 150);
+
+                    // Вычисляем высоту инпута динамически
+                    const newInputHeight = containerHeight - newChatHeight - 40;
+                    
+                    chat.style.height = newChatHeight + 'px';
+                    input.style.height = newInputHeight + 'px';
+                }
+
+                function stopResize() {
+                    isResizing = false;
+                    document.removeEventListener('mousemove', resize);
+                    document.removeEventListener('mouseup', stopResize);
+                }
+                
+                document.getElementById('chatResizer').addEventListener('mouseenter', () => {
+                    document.body.style.cursor = 'row-resize';
+                });
+
+                document.getElementById('chatResizer').addEventListener('mouseleave', () => {
+                    document.body.style.cursor = 'auto';
+                });
+
+                document.getElementById('chatResizer').addEventListener('mousedown', startResize);
             </script>
         </body>
         </html>
     `;
+}
+
+interface ExtensionState {
+    conversationHistory: DeepSeekMessage[];
+    projectFiles: string[];
+    currentFileContext?: string;
 }

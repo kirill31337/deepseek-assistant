@@ -1,15 +1,21 @@
 body {
-  padding: 10px;
-  background-color: #1e1e1e;
-  color: #d4d4d4;
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  margin: 2px !important;
+  padding: 2px !important;
 }
 
 .toolbar {
-  margin-bottom: 15px;
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .toolbar button {
@@ -27,28 +33,44 @@ body {
 }
 
 #chat {
-  height: 55vh;
+  flex: 1 1 auto;
+  margin: 4px 0 !important;
+  padding: 0px !important;
+  min-height: 100px;
+  max-height: 80vh;
+  overflow-y: auto;
   overflow-y: auto;
   border: 1px solid #333;
-  padding: 15px;
   margin-bottom: 15px;
   border-radius: 4px;
   background: #252526;
-  resize: vertical;
   box-sizing: border-box;
 }
 
+.input-container {
+  margin: 4px 0 !important;
+  padding: 0px !important;
+  position: relative;
+  flex: 0 0 auto;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 0;
+}
+
 .reasoning-panel {
+  margin: 5px 0 !important;
   max-height: 150px;
   overflow-y: auto;
   border: 1px solid var(--vscode-editorWidget-border);
   margin: 5px 0;
-  padding: 8px;
+  padding: 0px !important;
   background: var(--vscode-editorWidget-background);
   white-space: pre-wrap;
   font-family: var(--vscode-editor-font-family);
-  resize: vertical;
   box-sizing: border-box;
+  scroll-behavior: smooth;
+  border-radius: 6px !important;
 }
 
 .reasoning-header {
@@ -56,6 +78,7 @@ body {
   background: var(--vscode-editorWidget-background);
   border-bottom: 1px solid var(--vscode-editorWidget-border);
   font-weight: bold;
+  border-radius: 6px 6px 0 0 !important; /* скругляем верхние углы */
 }
 
 #reasoning-content {
@@ -63,11 +86,13 @@ body {
   white-space: pre-wrap;
   font-family: var(--vscode-editor-font-family);
   font-size: 0.9em;
+  border-radius: 6px;
+  border: 1px solid #3d3d3d;
 }
 
 .message {
-  margin: 10px 0;
-  padding: 10px;
+  margin: 12px 0 !important;
+  padding: 7px;
   border-radius: 4px;
   animation: fadeIn 0.3s;
 }
@@ -75,20 +100,62 @@ body {
 .user-message {
   background: #1a3a5c;
   border-left: 4px solid #2196F3;
+  margin: 12px 0 !important;
 }
 
 .assistant-message {
   background: #1a5c3a;
   border-left: 4px solid #4CAF50;
+  margin: 12px 0 !important;
 }
 
+/* Контейнер для кода с относительным позиционированием */
 pre {
+  position: relative !important;
   background: #252526 !important;
-  padding: 10px;
-  border-radius: 4px;
+  padding: 1px !important;
+  border-radius: 6px !important;
   overflow-x: auto;
+  margin: 8px 0 !important;
+  border: 1px solid #3d3d3d !important;
 }
 
+/* Стили для кнопки копирования */
+.copy-button {
+  position: absolute !important;
+  top: 8px !important;
+  right: 8px !important;
+  background: #333333cc !important;
+  border: 1px solid #444 !important;
+  border-radius: 4px !important;
+  padding: 4px 8px !important;
+  font-size: 12px !important;
+  color: #fff !important;
+  cursor: pointer !important;
+  opacity: 0;
+  transition: opacity 0.2s ease-in-out;
+  z-index: 1000 !important;
+}
+
+/* Показываем кнопку при наведении на блок кода */
+pre:hover .copy-button {
+    opacity: 1;
+}
+
+.copy-button:hover {
+    background: #444444cc !important;
+}
+
+/* Анимация успешного копирования */
+.copy-button.success {
+  background: #1e8e3e !important;
+}
+
+pre code {
+  font-family: var(--vscode-editor-font-family) !important;
+  font-size: 13px !important;
+  line-height: 1.4 !important;
+}
 .code-header {
   display: flex;
   justify-content: space-between;
@@ -98,23 +165,44 @@ pre {
   color: #888;
 }
 
-.input-container {
-  position: relative;
-  width: 100%;
-  box-sizing: border-box;
+.textarea-wrapper {
+    position: relative;
+    margin-bottom: 8px;
 }
 
 #input {
-  width: 100%;
-  height: 100px;
-  padding: 12px;
-  background: #252526;
-  color: #d4d4d4;
-  border: 1px solid #333;
+    width: 100%;
+    height: 100px;
+    padding: 12px;
+    background: #252526;
+    color: #d4d4d4;
+    border: 1px solid #333;
+    border-radius: 4px;
+    font-family: 'Consolas', monospace;
+    box-sizing: border-box;
+    resize: none;
+}
+
+.enter-label {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  background: #2d2d2d;
+  color: #aaa;
+  padding: 3px 8px;
   border-radius: 4px;
-  font-family: 'Consolas', monospace;
-  resize: vertical;
-  box-sizing: border-box;
+  font-size: 12px;
+  opacity: 0.9;
+  pointer-events: auto;
+  z-index: 2;
+  border: 1px solid #444;
+  cursor: pointer;
+  transition: background-color 0.2s, opacity 0.2s;
+}
+
+.enter-label:hover {
+  background: #3d3d3d;
+  opacity: 1;
 }
 
 #status {
@@ -122,41 +210,137 @@ pre {
   font-size: 0.8em;
   margin: 5px 0;
 }
-#drop-zone {
-  position: relative;
-  height: 100%;
+
+.context-files {
+    margin-bottom: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 10px;
 }
 
-.drag-over {
-  background: rgba(100, 100, 100, 0.2);
-  border: 2px dashed #666;
-}
-
-.file-list {
-  border-bottom: 1px solid var(--vscode-editorWidget-border);
-  padding: 8px;
-  max-height: 120px;
-  overflow-y: auto;
-}
-
-.file-item {
+.context-file {
   display: flex;
   align-items: center;
-  padding: 4px 0;
+  background: #2d2d2d;
+  border: 1px solid #3d3d3d;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  gap: 4px;
 }
 
-.file-icon {
-  margin-right: 8px;
-  width: 16px;
-  height: 16px;
+
+.context-file .remove {
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.2s;
 }
 
-.remove-file {
-  margin-left: auto;
+.context-file .remove:hover {
+    opacity: 1;
+}
+
+.context-file.current-file {
+  border: 1px solid #4CAF50;
+  background: rgba(76, 175, 80, 0.1);
+}
+
+.context-file.current-file span {
+  color: #4CAF50 !important;
+  font-weight: bold;
+}
+.context-file span[title] {
+  position: relative;
+  cursor: help;
+}
+
+.context-file span[title]:hover::after {
+  content: attr(title);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #333;
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+  z-index: 1000;
+  pointer-events: none;
+}
+#settingsButton {
+  position: static;
+  background: none;
+  border: none;
   cursor: pointer;
-  color: var(--vscode-errorForeground);
+  font-size: 20px;
 }
+.hljs {
+  background: var(--vscode-editor-background);
+  color: var(--vscode-editor-foreground);
+}
+
+.loading-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px;
+  background: #1a5c3a;
+  border-left: 4px solid #4CAF50;
+  border-radius: 4px;
+  margin: 10px 0;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  background: #4CAF50;
+  border-radius: 50%;
+  animation: pulse 1.4s infinite;
+  opacity: 0.3;
+}
+
+.resizer {
+  height: 8px;
+  background: #4CAF50;
+  cursor: row-resize;
+  margin: 4px !important;
+  z-index: 1000;
+  position: relative; 
+  transition: all 0.3s ease;
+  border-radius: 3px; 
+}
+
+.resizer:hover {
+  height: 12px; 
+  background: #45a049; 
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2); 
+}
+
+.resizer::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 40px;
+  height: 3px;
+  background: rgba(255,255,255,0.3);
+  border-radius: 2px;
+}
+
+
+.dot:nth-child(2) { animation-delay: 0.2s; }
+.dot:nth-child(3) { animation-delay: 0.4s; }
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+  0% { transform: scale(0.8); opacity: 0.3; }
+  50% { transform: scale(1.2); opacity: 1; }
+  100% { transform: scale(0.8); opacity: 0.3; }
 }

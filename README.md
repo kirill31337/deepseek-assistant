@@ -4,19 +4,17 @@ Professional AI coding assistant for VS Code powered by DeepSeek Reasoner.
 
 ## Features
 
-- Real-time code analysis
 - Context-aware suggestions
-- Streaming responses
+- Streaming responses(CoT and final answer)
 - Syntax highlighting
-- Quick code actions
-- Multi-language support
 
 ## Installation
 
 1. Install extension from VS Code Marketplace
 2. Add your DeepSeek API key to settings
-3. Open chat with `Ctrl+Shift+P` → "Open DeepSeek Assistant"
+   (exactly DeepSeek API key, not OpenAi)
 
 ## Configuration
 
-Set your API key in:
+Working only with latest DeepSeek model "deepseek-reasoner" and only
+with DeepSeek API key.

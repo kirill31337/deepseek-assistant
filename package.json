@@ -2,8 +2,14 @@
     "name": "deepseek-r1-assistant",
     "displayName": "Deepseek R1 Assistant",
     "description": "VS Code extension for Deepseek(R1) AI",
-    "version": "0.0.1",
+    "version": "0.1.2",
     "publisher": "kirill31337",
+    "icon": "media/icon.png",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/kirill31337/deepseek-assistant"
+    },
     "engines": {
         "vscode": "^1.85.0"
     },
@@ -11,12 +17,12 @@
         "Programming Languages",
         "Other"
     ],
+    "main": "./out/src/extension.js",
     "activationEvents": [
         "onLanguage:python",
         "onLanguage:javascript",
         "onLanguage:typescript"
     ],
-    "main": "./out/src/extension.js",
     "contributes": {
         "commands": [
             {
@@ -35,20 +41,31 @@
                     "type": "string",
                     "default": "https://api.deepseek.com/v1/chat/completions"
                 },
-                "deepseekAssistant.model": {
-                    "type": "string",
-                    "default": "deepseek-reasoner"
-                },
                 "deepseekAssistant.maxTokens": {
                     "type": "number",
                     "default": 2000
-                },
-                "deepseekAssistant.streaming": {
-                    "type": "boolean",
-                    "default": true
                 }
             }
-        }
+        },
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "deepseek-assistant",
+                    "title": "DeepSeek Assistant",
+                    "icon": "media/icon.svg"
+                }
+            ]
+        },
+        "views": {
+        "deepseek-assistant": [
+            {
+                "id": "deepseek-assistant-view",
+                "name": "DeepSeek Assistant",
+                "type": "webview",
+                "visibility": "visible" 
+            }
+        ]
+    }
     },
     "scripts": {
         "vscode:prepublish": "npm run compile",
@@ -67,11 +84,5 @@
         "@types/node": "^20.11.0",
         "@types/vscode": "^1.85.0",
         "typescript": "^5.3.2"
-    },
-    "settings": {
-        "repository": {
-        "type": "git",
-        "url": "https://github.com/kirill31337/deepseek-assistant.git"
-        }
     }
 }
