@@ -107,6 +107,13 @@ async function buildCodeContext(currentFile: string | undefined, projectFiles: s
 
 
 
+function getOrCreatePanel(context: vscode.ExtensionContext): vscode.WebviewPanel {
+    if (panel) {
+        return panel;
+    }
+    return createWebviewPanel(context);
+}
+
 function createWebviewPanel(context: vscode.ExtensionContext): vscode.WebviewPanel {
     
     panel = vscode.window.createWebviewPanel(
@@ -134,7 +141,7 @@ function createWebviewPanel(context: vscode.ExtensionContext): vscode.WebviewPan
                 projectFiles = [];
                 await updateSystemContext();
                 if (panel) {
-                    panel.webview.postMessage({ command: 'clearChat' });
+                    panel.webview.postMessage({ command: 'clearHistory' });
                     delayedFileUpdate(panel.webview);
                 }
                 break;
@@ -338,6 +345,9 @@ async function handleUserMessage(text: string, webview: vscode.Webview, context:
 
 class DeepSeekViewProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
+    public getWebview(): vscode.Webview | undefined {
+        return this._view?.webview;
+    }
     private readonly context: vscode.ExtensionContext;
 
     constructor(context: vscode.ExtensionContext) {
@@ -386,7 +396,7 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
                     conversationHistory = [];
                     projectFiles = currentFileContext ? [currentFileContext] : [];
                     await updateSystemContext();
-                    webviewView.webview.postMessage({ command: 'clearChat' });
+                    webviewView.webview.postMessage({ command: 'clearHistory' });
                     webviewView.webview.postMessage({ 
                         command: 'updateFiles',
                         files: projectFiles
@@ -550,6 +560,33 @@ export async function activate(context: vscode.ExtensionContext) {
             }
             panel.reveal(vscode.ViewColumn.Beside);
         }
+    );
+    context.subscriptions.push(
+        vscode.commands.registerCommand('deepseek-assistant.addFiles', async () => {
+            const webview = viewProvider.getWebview();
+            if (webview) {
+                await handleAddFiles(webview, context);
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('deepseek-assistant.clearHistory', async () => {
+            const webview = viewProvider.getWebview();
+            if (webview) {
+                webview.postMessage({ command: 'clearHistory' });
+                conversationHistory = [];
+                projectFiles = currentFileContext ? [currentFileContext] : [];
+                await updateSystemContext();
+                await saveState(context);
+            }
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('deepseek-assistant.openSettings', () => {
+            vscode.commands.executeCommand('workbench.action.openSettings', 'deepseekAssistant');
+        })
     );
     context.subscriptions.push(registerCommand);
     const openSettingsCommand = vscode.commands.registerCommand(
@@ -727,15 +764,6 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
             </style>
         </head>
         <body>
-            <div class="toolbar">
-                <button onclick="addFiles()">Add Files</button>
-                <div class="toolbar-right">
-                    <button onclick="clearHistory()">New chat</button>
-                    <button id="settingsButton" title="Открыть настройки">
-                        <i class="fas fa-cog"></i>
-                    </button>
-                </div>
-            </div>
             <div id="context-files" class="context-files"></div>
             <div id="chat"></div>
             <div class="resizer" id="chatResizer"></div>
@@ -786,7 +814,7 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                             document.getElementById('status').textContent = event.data.text;
                             setTimeout(() => document.getElementById('status').textContent = '', 3000);
                             break;
-                        case 'clearChat':
+                        case 'clearHistory':
                             chat.innerHTML = '';
                             document.getElementById('reasoning-content').innerHTML = '';
                             break;

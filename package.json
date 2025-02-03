@@ -2,7 +2,7 @@
     "name": "deepseek-r1-assistant",
     "displayName": "Deepseek R1 Assistant",
     "description": "VS Code extension for Deepseek(R1) AI",
-    "version": "0.1.4",
+    "version": "0.1.5",
     "publisher": "kirill31337",
     "icon": "media/icon.png",
     "license": "MIT",
@@ -28,6 +28,21 @@
             {
                 "command": "deepseek-assistant.openChat",
                 "title": "Open DeepSeek Assistant"
+            },
+            {
+                "command": "deepseek-assistant.addFiles",
+                "title": "Add Files to Context",
+                "icon": "$(file-add)"
+            },
+            {
+                "command": "deepseek-assistant.clearHistory",
+                "title": "Clear Chat History",
+                "icon": "$(clear-all)"
+            },
+            {
+                "command": "deepseek-assistant.openSettings",
+                "title": "Open Settings",
+                "icon": "$(gear)"
             }
         ],
         "configuration": {
@@ -63,6 +78,25 @@
                 "name": "DeepSeek Assistant",
                 "type": "webview",
                 "visibility": "visible" 
+            }
+        ]
+    },
+    "menus": {
+        "view/title": [
+            {
+                "command": "deepseek-assistant.addFiles",
+                "when": "view == deepseek-assistant-view",
+                "group": "navigation@1"
+            },
+            {
+                "command": "deepseek-assistant.clearHistory", 
+                "when": "view == deepseek-assistant-view",
+                "group": "navigation@2"
+            },
+            {
+                "command": "deepseek-assistant.openSettings",
+                "when": "view == deepseek-assistant-view", 
+                "group": "navigation@3"
             }
         ]
     }
