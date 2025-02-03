@@ -325,7 +325,7 @@ async function handleUserMessage(text: string, webview: vscode.Webview, context:
         conversationHistory.push({ role: 'user', content: text });
 
         const request: DeepSeekRequest = {
-            model: config.get('model', 'deepseek-reasoner'),
+            model: "deepseek-reasoner",
             messages: conversationHistory,
             max_tokens: config.get('maxTokens', 2000),
             stream: true,
@@ -588,15 +588,8 @@ export async function activate(context: vscode.ExtensionContext) {
             vscode.commands.executeCommand('workbench.action.openSettings', 'deepseekAssistant');
         })
     );
+    
     context.subscriptions.push(registerCommand);
-    const openSettingsCommand = vscode.commands.registerCommand(
-        'deepseek-assistant.openSettings',
-        () => {
-            vscode.commands.executeCommand('workbench.action.openSettings', 'deepseekAssistant');
-        }
-    );
-    context.subscriptions.push(openSettingsCommand);
-
     async function saveState(context: vscode.ExtensionContext) {
         if (conversationHistory.length > MAX_HISTORY_LENGTH) {
             conversationHistory = [
