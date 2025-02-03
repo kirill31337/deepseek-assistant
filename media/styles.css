@@ -33,6 +33,7 @@ body {
 }
 
 #chat {
+  user-select: text !important;
   flex: 1 1 auto;
   margin: 4px 0 !important;
   padding: 0px !important;
@@ -63,36 +64,30 @@ body {
   max-height: 150px;
   overflow-y: auto;
   border: 1px solid var(--vscode-editorWidget-border);
-  margin: 5px 0;
-  padding: 0px !important;
+  padding: 8px !important;
   background: var(--vscode-editorWidget-background);
   white-space: pre-wrap;
   font-family: var(--vscode-editor-font-family);
+  font-size: 0.9em;
   box-sizing: border-box;
   scroll-behavior: smooth;
   border-radius: 6px !important;
 }
 
-/* Добавляем стили для скрытия и анимации CoT */
 .reasoning-panel.hidden {
   max-height: 0;
+  padding: 0 !important;
   opacity: 0;
-  transition: max-height 0.3s ease, opacity 0.3s ease;
+  border: none;
+  transition: all 0.3s ease;
 }
 
 .reasoning-panel.visible {
   max-height: 150px;
   opacity: 1;
-  transition: max-height 0.3s ease, opacity 0.3s ease;
+  transition: all 0.3s ease;
 }
 
-.reasoning-header {
-  padding: 8px;
-  background: var(--vscode-editorWidget-background);
-  border-bottom: 1px solid var(--vscode-editorWidget-border);
-  font-weight: bold;
-  border-radius: 6px 6px 0 0 !important; /* скругляем верхние углы */
-}
 
 #reasoning-content {
   padding: 8px;
@@ -108,6 +103,7 @@ body {
   padding: 7px;
   border-radius: 4px;
   animation: fadeIn 0.3s;
+  user-select: text !important;
 }
 
 .user-message {

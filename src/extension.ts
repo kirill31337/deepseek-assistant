@@ -7,8 +7,32 @@ import hljs from 'highlight.js';
 const MAX_HISTORY_LENGTH = 200;
 
 
+const debounce = (fn: Function, delay: number) => { 
+    let timeout: NodeJS.Timeout; 
+    return (...args: any[]) => { 
+        clearTimeout(timeout); 
+        timeout = setTimeout(() => fn(...args), delay); 
+    }; 
+};
+
+
+const delayedFileUpdate = debounce((webview: vscode.Webview) => {
+    sendFileUpdates(webview);
+}, 500);
+
+function sendFileUpdates(webview: vscode.Webview) {
+    const filesToShow = [
+        ...(currentFileContext ? [normalizePath(currentFileContext)] : []),
+        ...projectFiles.map(f => normalizePath(f))
+            .filter(f => f !== normalizePath(currentFileContext || ''))
+    ];
+    webview.postMessage({
+        command: 'updateFiles',
+        files: filesToShow
+    });
+}
 function normalizePath(filePath: string): string {
-    return path.normalize(filePath).replace(/\\/g, '/'); // Унификация разделителей
+    return path.normalize(filePath).replace(/\\/g, '/');
 }
 
 interface DeepSeekMessage {
@@ -57,7 +81,6 @@ async function updateSystemContext() {
 async function buildCodeContext(currentFile: string | undefined, projectFiles: string[]): Promise<string> {
     let codeContext = '';
     
-    // Текущий файл 
     if (currentFile) {
         try {
             const normalizedCurrent = normalizePath(currentFile);
@@ -68,7 +91,6 @@ async function buildCodeContext(currentFile: string | undefined, projectFiles: s
         }
     }
 
-    // Добавленные файлы (без текущего)
     for (const filePath of projectFiles.filter(f => normalizePath(f) !== normalizePath(currentFile || ''))) {
         try {
             const normalizedPath = normalizePath(filePath);
@@ -82,249 +104,237 @@ async function buildCodeContext(currentFile: string | undefined, projectFiles: s
     return codeContext;
 }
 
-function sendFileUpdates(webview: vscode.Webview) {
-    const filesToShow = [
-        ...(currentFileContext ? [normalizePath(currentFileContext)] : []),
-        ...projectFiles.map(f => normalizePath(f))
-            .filter(f => f !== normalizePath(currentFileContext || ''))
-    ];
-    webview.postMessage({
-        command: 'updateFiles',
-        files: filesToShow
+
+
+
+function createWebviewPanel(context: vscode.ExtensionContext): vscode.WebviewPanel {
+    
+    panel = vscode.window.createWebviewPanel(
+        'deepseekChat',
+        'DeepSeek Assistant Pro',
+        vscode.ViewColumn.Beside,
+        {
+            enableScripts: true,
+            retainContextWhenHidden: true,
+            localResourceRoots: [context.extensionUri]
+        }
+    );
+
+    panel.webview.html = getWebviewContentForView(context, panel.webview);
+    delayedFileUpdate(panel.webview);
+    panel.webview.onDidReceiveMessage(async message => {
+        switch (message.command) {
+            case 'sendMessage':
+                if (panel) {
+                    await handleUserMessage(message.text, panel.webview, context);
+                }
+                break;
+            case 'clearHistory':
+                conversationHistory = [];
+                projectFiles = [];
+                await updateSystemContext();
+                if (panel) {
+                    panel.webview.postMessage({ command: 'clearChat' });
+                    delayedFileUpdate(panel.webview);
+                }
+                break;
+            case 'addFiles':
+                if (panel) {
+                    await handleAddFiles(panel.webview, context);
+                }
+                break;
+            case 'abortRequest':
+                currentStream?.abort();
+                currentStream = undefined;
+                break;
+            case 'removeFile':
+                projectFiles = projectFiles.filter(f => f !== message.file);
+                if (currentFileContext === message.file) {
+                    currentFileContext = undefined;
+                }
+                await updateSystemContext();
+                if (panel) {
+                    delayedFileUpdate(panel.webview);
+                }
+                await saveState(context);
+                break;
+        }
     });
+
+    panel.onDidDispose(() => {
+        panel = undefined;
+        conversationHistory = [];
+        projectFiles = [];
+    });
+
+    return panel;
 }
 
+async function handleAddFiles(webview: vscode.Webview, context: vscode.ExtensionContext) {
+    const uris = await vscode.window.showOpenDialog({
+        canSelectMany: true,
+        openLabel: 'Add to Context'
+    });
 
-    function createWebviewPanel(context: vscode.ExtensionContext): vscode.WebviewPanel {
-        
-        panel = vscode.window.createWebviewPanel(
-            'deepseekChat',
-            'DeepSeek Assistant Pro',
-            vscode.ViewColumn.Beside,
+    if (uris?.length) {
+        const newFiles = uris
+            .map(uri => normalizePath(uri.fsPath))
+            .filter(f => 
+                f !== normalizePath(currentFileContext || '') && 
+                !projectFiles.some(pf => normalizePath(pf) === f)
+            );
+            
+        projectFiles.push(...newFiles);
+        await updateSystemContext();
+        delayedFileUpdate(webview);
+    }
+}
+
+async function handleStreamingRequest(request: DeepSeekRequest, webview: vscode.Webview, context: vscode.ExtensionContext) {
+    request.model = "deepseek-reasoner";
+    let buffer = '';
+    try {
+        const config = vscode.workspace.getConfiguration('deepseekAssistant');
+        const response = await axios.post(
+            config.get('endpoint', 'https://api.deepseek.com/v1/chat/completions'),
+            request,
             {
-                enableScripts: true,
-                retainContextWhenHidden: true,
-                localResourceRoots: [context.extensionUri]
+                responseType: 'stream',
+                headers: {
+                    Authorization: `Bearer ${config.get('apiKey')}`,
+                    'Content-Type': 'application/json'
+                },
+                signal: currentStream?.signal
             }
         );
 
-        panel.webview.html = getWebviewContentForView(context, panel.webview);
-        sendFileUpdates(panel.webview);
-        panel.webview.onDidReceiveMessage(async message => {
-            switch (message.command) {
-                case 'sendMessage':
-                    if (panel) {
-                      await handleUserMessage(message.text, panel.webview, context);
+        response.data.on('data', (chunk: Buffer) => {
+            try {
+                buffer += chunk.toString();
+                const lines = buffer.split('\n');
+                const parseStreamData = (data: string) => {
+                    try {
+                        return JSON.parse(data);
+                    } catch (e) {
+                        console.log('Partial JSON received:', data);
+                        return null;
                     }
-                    break;
-                case 'clearHistory':
-                    conversationHistory = [];
-                    projectFiles = [];
-                    await updateSystemContext();
-                    if (panel) {
-                      panel.webview.postMessage({ command: 'clearChat' });
-                      sendFileUpdates(panel.webview);
+                };
+                for (let i = 0; i < lines.length - 1; i++) {
+                    const line = lines[i].trim();
+                    if (line === 'data: [DONE]') {
+                        webview.postMessage({ command: 'endLoading' });
+                        continue;
                     }
-                    break;
-                case 'addFiles':
-                    if (panel) {
-                      await handleAddFiles(panel.webview, context);
-                    }
-                    break;
-                case 'abortRequest':
-                    currentStream?.abort();
-                    currentStream = undefined;
-                    break;
-                case 'removeFile':
-                    projectFiles = projectFiles.filter(f => f !== message.file);
-                    if (currentFileContext === message.file) {
-                        currentFileContext = undefined;
-                    }
-                    await updateSystemContext();
-                    if (panel) {
-                        sendFileUpdates(panel.webview);
-                    }
-                    await saveState(context);
-                    break;
-            }
-        });
-
-        panel.onDidDispose(() => {
-            panel = undefined;
-            conversationHistory = [];
-            projectFiles = [];
-        });
-
-        return panel;
-    }
-
-    async function handleAddFiles(webview: vscode.Webview, context: vscode.ExtensionContext) {
-        const uris = await vscode.window.showOpenDialog({
-            canSelectMany: true,
-            openLabel: 'Add to Context'
-        });
-    
-        if (uris?.length) {
-            // Фильтруем уже добавленные файлы и текущий
-            const newFiles = uris
-                .map(uri => normalizePath(uri.fsPath))
-                .filter(f => 
-                    f !== normalizePath(currentFileContext || '') && // Исключить текущий
-                    !projectFiles.some(pf => normalizePath(pf) === f) // Исключить дубли
-                );
-                
-            projectFiles.push(...newFiles);
-            await updateSystemContext();
-            sendFileUpdates(webview);
-        }
-        //await saveState(context);
-    }
-
-    async function handleStreamingRequest(request: DeepSeekRequest, webview: vscode.Webview, context: vscode.ExtensionContext) {
-        request.model = "deepseek-reasoner"; // Зашиваем модель
-        let buffer = '';
-        try {
-            const config = vscode.workspace.getConfiguration('deepseekAssistant');
-            const response = await axios.post(
-                config.get('endpoint', 'https://api.deepseek.com/v1/chat/completions'),
-                request,
-                {
-                    responseType: 'stream',
-                    headers: {
-                        Authorization: `Bearer ${config.get('apiKey')}`,
-                        'Content-Type': 'application/json'
-                    },
-                    signal: currentStream?.signal
-                }
-            );
-
-            response.data.on('data', (chunk: Buffer) => {
-                try {
-                    buffer += chunk.toString();
-                    const lines = buffer.split('\n');
-                    const parseStreamData = (data: string) => {
-                        try {
-                            return JSON.parse(data);
-                        } catch (e) {
-                            console.log('Partial JSON received:', data);
-                            return null;
-                        }
-                    };
-                    for (let i = 0; i < lines.length - 1; i++) {
-                        const line = lines[i].trim();
-                        if (line === 'data: [DONE]') {
-                            webview.postMessage({ command: 'endLoading' });
-                            continue;
-                        }
+                    
+                    if (line.startsWith('data: ')) {
+                        const data = parseStreamData(line.slice(6));
+                        if (!data) continue;
+                        const contentChunk = data.choices[0]?.delta?.content || '';
+                        const reasoningChunk = data.choices[0]?.delta?.reasoning_content || '';
                         
-                        if (line.startsWith('data: ')) {
-                            const data = parseStreamData(line.slice(6));
-                            if (!data) continue;
-                            const contentChunk = data.choices[0]?.delta?.content || '';
-                            const reasoningChunk = data.choices[0]?.delta?.reasoning_content || '';
-                            
-                            if (contentChunk || reasoningChunk) {
-                                currentAssistantContent += contentChunk;
-                                webview.postMessage({
-                                    command: 'streamResponse',
-                                    text: contentChunk,
-                                    reasoning: reasoningChunk,
-                                    isFinal: false
-                                });
-                            }
+                        if (contentChunk || reasoningChunk) {
+                            currentAssistantContent += contentChunk;
+                            webview.postMessage({
+                                command: 'streamResponse',
+                                text: contentChunk,
+                                reasoning: reasoningChunk,
+                                isFinal: false
+                            });
                         }
                     }
-                    buffer = lines[lines.length - 1];
-                } catch (e) {
-                    webview.postMessage({ command: 'endLoading' }); 
-                    console.error('Stream processing error:', e);
                 }
-            });
+                buffer = lines[lines.length - 1];
+            } catch (e) {
+                webview.postMessage({ command: 'endLoading' }); 
+                console.error('Stream processing error:', e);
+            }
+        });
 
-            response.data.on('end', () => {
-                webview.postMessage({
-                    command: 'streamResponse',
-                    text: '',
-                    reasoning: '',
-                    isFinal: true
+        response.data.on('end', () => {
+            webview.postMessage({
+                command: 'streamResponse',
+                text: '',
+                reasoning: '',
+                isFinal: true
+            });
+            setTimeout(async () => {
+                conversationHistory.push({ 
+                    role: 'assistant', 
+                    content: currentAssistantContent 
                 });
-                setTimeout(async () => {
-                    conversationHistory.push({ 
-                        role: 'assistant', 
-                        content: currentAssistantContent 
-                    });
-                    await saveState(context);
-                }, 500);
-            });
+                await saveState(context);
+            }, 500);
+        });
 
-            response.data.on('error', (error: Error) => {
-                console.error('Stream error:', error);
-                webview.postMessage({ command: 'endLoading' }); 
-                handleError(error);
-            });
-
-        } catch (error) {
-            if (!axios.isCancel(error)) {
-                webview.postMessage({ command: 'endLoading' }); 
-                handleError(error);
-            }
-        }
-    }
-
-    function handleError(error: unknown) {
-        if (axios.isAxiosError(error)) {
-            let message = error.response?.data?.error?.message || error.message;
-            if (error.config?.headers?.Authorization) {
-                message = message.replace(error.config.headers.Authorization, '***');
-            }
-            vscode.window.showErrorMessage(`DeepSeek API Error: ${message}`);
-        } else if (error instanceof Error) {
-            vscode.window.showErrorMessage(`Extension Error: ${error.message}`);
-        } else {
-            vscode.window.showErrorMessage('Unknown error occurred');
-        }
-    }
-    
-    async function saveState(context: vscode.ExtensionContext) {
-        const state: ExtensionState = {
-            conversationHistory: [...conversationHistory],
-            projectFiles: [...projectFiles],
-            currentFileContext
-        };
-        await context.workspaceState.update('chatState', state);
-    }
-    
-    async function handleUserMessage(text: string, webview: vscode.Webview, context: vscode.ExtensionContext) {
-        try {
-            webview.postMessage({ command: 'startLoading' });
-            const config = vscode.workspace.getConfiguration('deepseekAssistant');
-            await updateSystemContext();
-            if (conversationHistory.length > 0) {
-                const lastMessage = conversationHistory[conversationHistory.length - 1];
-                if (lastMessage.role === 'user') {
-                    conversationHistory.pop();
-                }
-            }
-            conversationHistory.push({ role: 'user', content: text });
-    
-            const request: DeepSeekRequest = {
-                model: config.get('model', 'deepseek-reasoner'),
-                messages: conversationHistory,
-                max_tokens: config.get('maxTokens', 2000),
-                stream: true,
-            };
-    
-            currentStream = new AbortController();
-            currentAssistantContent = '';
-            await handleStreamingRequest(request, webview, context);
-        } catch (error) {
+        response.data.on('error', (error: Error) => {
+            console.error('Stream error:', error);
+            webview.postMessage({ command: 'endLoading' }); 
             handleError(error);
-            webview.postMessage({ command: 'endLoading' });
-        } finally {
-            currentStream = undefined;
-            await saveState(context);
+        });
+
+    } catch (error) {
+        if (!axios.isCancel(error)) {
+            webview.postMessage({ command: 'endLoading' }); 
+            handleError(error);
         }
     }
+}
+
+function handleError(error: unknown) {
+    if (axios.isAxiosError(error)) {
+        let message = error.response?.data?.error?.message || error.message;
+        if (error.config?.headers?.Authorization) {
+            message = message.replace(error.config.headers.Authorization, '***');
+        }
+        vscode.window.showErrorMessage(`DeepSeek API Error: ${message}`);
+    } else if (error instanceof Error) {
+        vscode.window.showErrorMessage(`Extension Error: ${error.message}`);
+    } else {
+        vscode.window.showErrorMessage('Unknown error occurred');
+    }
+}
+
+async function saveState(context: vscode.ExtensionContext) {
+    const state: ExtensionState = {
+        conversationHistory: [...conversationHistory],
+        projectFiles: [...projectFiles],
+        currentFileContext
+    };
+    await context.workspaceState.update('chatState', state);
+}
+
+async function handleUserMessage(text: string, webview: vscode.Webview, context: vscode.ExtensionContext) {
+    try {
+        webview.postMessage({ command: 'startLoading' });
+        const config = vscode.workspace.getConfiguration('deepseekAssistant');
+        await updateSystemContext();
+        if (conversationHistory.length > 0) {
+            const lastMessage = conversationHistory[conversationHistory.length - 1];
+            if (lastMessage.role === 'user') {
+                conversationHistory.pop();
+            }
+        }
+        conversationHistory.push({ role: 'user', content: text });
+
+        const request: DeepSeekRequest = {
+            model: config.get('model', 'deepseek-reasoner'),
+            messages: conversationHistory,
+            max_tokens: config.get('maxTokens', 2000),
+            stream: true,
+        };
+
+        currentStream = new AbortController();
+        currentAssistantContent = '';
+        await handleStreamingRequest(request, webview, context);
+    } catch (error) {
+        handleError(error);
+        webview.postMessage({ command: 'endLoading' });
+    } finally {
+        currentStream = undefined;
+        await saveState(context);
+    }
+}
 
 class DeepSeekViewProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
@@ -358,7 +368,6 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
             command: 'loadHistory',
             history: conversationHistory.filter(m => 
                 m.role !== 'system' && 
-                // Фильтр дубликатов
                 conversationHistory.findIndex(msg => 
                     msg.content === m.content
                 ) === conversationHistory.indexOf(m)
@@ -434,14 +443,11 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
     private refreshWebviewState(webview: vscode.Webview) {
         if (!webview) return;
     
-        // Обновляем файлы
         const filesToShow = [
             ...(currentFileContext ? [currentFileContext] : []),
             ...projectFiles.filter(f => f !== currentFileContext)
         ];
-        this.updateFiles(filesToShow);
-    
-        // Обновляем историю чата
+        delayedFileUpdate(this._view?.webview!);
         webview.postMessage({
             command: 'loadHistory',
             history: conversationHistory.filter(m => 
@@ -742,10 +748,7 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                     Reasoning
                     <span class="arrow up">▲</span>
                 </button>
-                <div id="reasoning-container" class="reasoning-panel hidden">
-                    <div class="reasoning-header">Chain of Thought</div>
-                    <div id="reasoning-content"></div>
-                </div>
+                <div id="reasoning-panel" class="reasoning-panel hidden"></div>
             </div>
 
             <script src="${syntaxHighlightingCSS}"></script>
@@ -841,10 +844,10 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                     if (data.reasoning) {
                         reasoningBuffer += data.reasoning;
                         updateReasoningContent(reasoningBuffer);
-                        const reasoningContainer = document.getElementById('reasoning-container');
-                        if (reasoningContainer) {
-                            reasoningContainer.scrollTo({
-                                top: reasoningContainer.scrollHeight,
+                        const reasoningPanel = document.getElementById('reasoning-panel');
+                        if (reasoningPanel) {
+                            reasoningPanel.scrollTo({
+                                top: reasoningPanel.scrollHeight,
                                 behavior: 'smooth'
                             });
                         }
@@ -860,11 +863,10 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                 }
 
                 function updateReasoningContent(content) {
-                    const reasoningElement = document.getElementById('reasoning-content');
-                    if (content && reasoningElement) {
-                        reasoningElement.innerHTML = marked.parse(content);
+                    const reasoningPanel = document.getElementById('reasoning-panel');
+                    if (content && reasoningPanel) {
+                        reasoningPanel.innerHTML = marked.parse(content);
                         hljs.highlightAll();
-                        reasoningElement.scrollTop = reasoningElement.scrollHeight;
                     }
                 }
 
@@ -916,7 +918,7 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                     const text = input.value.trim();
                     if (text) {
                         reasoningBuffer = '';
-                        document.getElementById('reasoning-content').innerHTML = '';
+                        document.getElementById('reasoning-panel').innerHTML = '';
                         addMessage('user', text);
                         vscode.postMessage({ command: 'sendMessage', text });
                         input.value = '';
@@ -936,22 +938,18 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                 }
 
                 function toggleReasoning() {
-                    const reasoningContainer = document.getElementById('reasoning-container');
+                    const reasoningPanel = document.getElementById('reasoning-panel');
                     const arrow = document.querySelector('.toggle-button .arrow');
-                    if (reasoningContainer) {
-                        if (reasoningContainer.classList.contains('hidden')) {
-                            reasoningContainer.classList.remove('hidden');
-                            reasoningContainer.classList.add('visible');
-                            arrow.classList.remove('up');
-                            arrow.classList.add('down');
-                            vscode.setState({ isReasoningVisible: true });
-                        } else {
-                            reasoningContainer.classList.remove('visible');
-                            reasoningContainer.classList.add('hidden');
-                            arrow.classList.remove('down');
-                            arrow.classList.add('up');
-                            vscode.setState({ isReasoningVisible: false });
-                        }
+                    if (reasoningPanel.classList.contains('hidden')) {
+                        reasoningPanel.classList.remove('hidden');
+                        reasoningPanel.classList.add('visible');
+                        arrow.classList.remove('up');
+                        arrow.classList.add('down');
+                    } else {
+                        reasoningPanel.classList.remove('visible');
+                        reasoningPanel.classList.add('hidden');
+                        arrow.classList.remove('down');
+                        arrow.classList.add('up');
                     }
                 }
 
@@ -1035,13 +1033,14 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                 function startResize(e) {
                     isResizing = true;
                     const chat = document.getElementById('chat');
+                    document.body.style.userSelect = 'none';
                     const toolbar = document.querySelector('.toolbar');
-                    const reasoningContainer = document.getElementById('reasoning-container');
+                    const panel = document.getElementById('reasoning-panel');
                     const chatRect = chat.getBoundingClientRect();
                     const containerRect = document.body.getBoundingClientRect();
                     const toolbarHeight = toolbar ? toolbar.offsetHeight : 0;
-                    const reasoningOffset = reasoningContainer && !reasoningContainer.classList.contains('hidden') 
-                        ? reasoningContainer.offsetHeight 
+                    const reasoningOffset = panel && !panel.classList.contains('hidden') 
+                        ? panel.offsetHeight 
                         : 0;
                     const offset = chatRect.top + containerRect.top + toolbarHeight + reasoningOffset + 4;
                     startY = e.clientY - offset;
@@ -1078,8 +1077,14 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
 
                 function stopResize() {
                     isResizing = false;
+                    document.body.style.userSelect = ''; 
                     document.removeEventListener('mousemove', resize);
                     document.removeEventListener('mouseup', stopResize);
+                    const chat = document.getElementById('chat');
+                    chat.style.userSelect = 'text';
+                    document.querySelectorAll('.message').forEach(msg => {
+                        msg.style.userSelect = 'text';
+                    });
                 }
                 
                 document.getElementById('chatResizer').addEventListener('mouseenter', () => {
