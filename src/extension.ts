@@ -53,7 +53,14 @@ let currentAssistantContent = '';
 let projectFiles: string[] = [];
 let currentFileContext: string | undefined;
 let panel: vscode.WebviewPanel | undefined;
-
+let savedState: ExtensionState = {
+    isReasoningExpanded: false,
+    conversationHistory: [],
+    projectFiles: [],
+    currentFileContext: undefined,
+    chatHeight: 400,
+    inputHeight: 120
+};
 async function updateSystemContext() {
     if (currentFileContext) {
         try {
@@ -165,6 +172,17 @@ function createWebviewPanel(context: vscode.ExtensionContext): vscode.WebviewPan
                 }
                 await saveState(context);
                 break;
+                case 'saveState':
+                    if (message.chatHeight !== undefined) savedState.chatHeight = message.chatHeight;
+                    if (message.inputHeight !== undefined) savedState.inputHeight = message.inputHeight;
+                    if (message.isReasoningExpanded !== undefined) {
+                        savedState.isReasoningExpanded = message.isReasoningExpanded;
+                    }
+                    savedState.conversationHistory = conversationHistory;
+                    savedState.projectFiles = projectFiles;
+                    savedState.currentFileContext = currentFileContext;
+                    await context.workspaceState.update('chatState', savedState);
+                    break;
         }
     });
 
@@ -303,10 +321,20 @@ function handleError(error: unknown) {
 }
 
 async function saveState(context: vscode.ExtensionContext) {
+    if (conversationHistory.length > MAX_HISTORY_LENGTH) {
+        conversationHistory = [
+            conversationHistory[0],
+            ...conversationHistory.slice(-MAX_HISTORY_LENGTH + 1)
+        ];
+    }
+    
     const state: ExtensionState = {
-        conversationHistory: [...conversationHistory],
-        projectFiles: [...projectFiles],
-        currentFileContext
+        conversationHistory,
+        projectFiles: projectFiles.slice(-50),
+        currentFileContext,
+        isReasoningExpanded: savedState.isReasoningExpanded,
+        chatHeight: savedState.chatHeight,
+        inputHeight: savedState.inputHeight
     };
     await context.workspaceState.update('chatState', state);
 }
@@ -473,6 +501,14 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
             command: 'updateApiKey',
             apiKey: config.get('apiKey', '')
         });
+        webview.postMessage({
+            command: 'restoreState',
+            state: {
+                isReasoningExpanded: savedState.isReasoningExpanded,
+                chatHeight: savedState.chatHeight,
+                inputHeight: savedState.inputHeight
+            }
+        });
     }
 }
 
@@ -516,6 +552,14 @@ export async function activate(context: vscode.ExtensionContext) {
             command: 'loadHistory',
             history: conversationHistory.filter(m => m.role !== 'system')
         });
+        panel?.webview.postMessage({
+            command: 'restoreState',
+            state: {
+                isReasoningExpanded: savedState.isReasoningExpanded,
+                chatHeight: savedState.chatHeight,
+                inputHeight: savedState.inputHeight
+            }
+        });
     }
 
     context.subscriptions.push(
@@ -526,6 +570,7 @@ export async function activate(context: vscode.ExtensionContext) {
                         command: 'loadHistory',
                         history: conversationHistory.filter(m => m.role !== 'system')
                     });
+                    
                 }
             }
         })
@@ -601,7 +646,10 @@ export async function activate(context: vscode.ExtensionContext) {
         const state: ExtensionState = {
             conversationHistory,
             projectFiles: projectFiles.slice(-50),
-            currentFileContext
+            currentFileContext,
+            isReasoningExpanded: false,
+            chatHeight: 0,
+            inputHeight: 0
         };
         await context.workspaceState.update('chatState', state);
     }
@@ -736,9 +784,11 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
         vscode.Uri.joinPath(context.extensionUri, 'media', 'styles.css')
     );
 
+    const savedState = context.workspaceState.get<ExtensionState>('chatState');
+    const isReasoningExpanded = savedState?.isReasoningExpanded || false;
+    const chatHeight = savedState?.chatHeight || 400;
+    const inputHeight = savedState?.inputHeight || 120;
     const syntaxHighlightingCSS = generateSyntaxHighlightingCSS();
-
-
     const config = vscode.workspace.getConfiguration('deepseekAssistant');
     const apiKey = config.get('apiKey', '');
 
@@ -812,6 +862,7 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                             document.getElementById('reasoning-content').innerHTML = '';
                             break;
                         case 'updateFiles':
+                            console.log('updateFiles 865:', 'YES');
                             contextFiles = event.data.files || [];
                             updateContextFiles();
                             break;
@@ -961,7 +1012,9 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                 function toggleReasoning() {
                     const reasoningPanel = document.getElementById('reasoning-panel');
                     const arrow = document.querySelector('.toggle-button .arrow');
-                    if (reasoningPanel.classList.contains('hidden')) {
+                    const isExpanded = reasoningPanel.classList.contains('hidden');
+                    
+                    if (isExpanded) {
                         reasoningPanel.classList.remove('hidden');
                         reasoningPanel.classList.add('visible');
                         arrow.classList.remove('up');
@@ -972,6 +1025,11 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                         arrow.classList.remove('down');
                         arrow.classList.add('up');
                     }
+                    
+                    vscode.postMessage({ 
+                        command: 'saveState',
+                        isReasoningExpanded: isExpanded
+                    });
                 }
 
                 input.addEventListener('keydown', (e) => {
@@ -984,6 +1042,7 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                 let contextFiles = [];
 
                 function updateContextFiles() {
+                    console.log('updateFiles 1045:', 'YES');
                     const container = document.getElementById('context-files');
                     if (!container) {
                         console.warn('Context files container not found');
@@ -1008,22 +1067,45 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                         removeSpan.textContent = '×';
                         removeSpan.onclick = () => removeFile(file);
 
-                        // Первый файл в списке — текущий
+  
                         if (index === 0) {
                             fileEl.classList.add('current-file');
                         }
 
                         fileEl.appendChild(fileSpan);
-                        fileEl.appendChild(removeSpan); // Добавляем крестик для всех файлов
+                        fileEl.appendChild(removeSpan);
 
                         container.appendChild(fileEl);
                     });
                 }
 
-        
+                function getFileName(path) {
+                    return path.split(/[\\/]/).pop() || path;
+                }
+
+                function removeFile(file) {
+                    contextFiles = contextFiles.filter(f => f !== file);
+                    updateContextFiles();
+                    vscode.postMessage({ command: 'removeFile', file });
+                }
+                    
                 document.addEventListener('DOMContentLoaded', () => {
                     hljs.highlightAll();
+                    const reasoningPanel = document.getElementById('reasoning-panel');
+                    const arrow = document.querySelector('.toggle-button .arrow');
                     const state = vscode.getState();
+                    if (${isReasoningExpanded}) {
+                        reasoningPanel.classList.remove('hidden');
+                        reasoningPanel.classList.add('visible');
+                        arrow.classList.remove('up');
+                        arrow.classList.add('down');
+                    }
+
+                    // Восстанавливаем размеры
+                    const chat = document.getElementById('chat');
+                    const input = document.getElementById('input');
+                    if (chat) chat.style.height = '${chatHeight}px';
+                    if (input) input.style.height = '${inputHeight}px';
                     if (state && state.isReasoningVisible) {
                         const reasoningContainer = document.getElementById('reasoning-container');
                         const arrow = document.querySelector('.toggle-button .arrow');
@@ -1076,6 +1158,11 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                     
                     chat.style.height = newChatHeight + 'px';
                     input.style.height = newInputHeight + 'px';
+                    vscode.postMessage({ 
+                    command: 'saveState',
+                        chatHeight: newChatHeight,
+                        inputHeight: newInputHeight
+                    });
                 }
 
                 function stopResize() {
@@ -1106,7 +1193,10 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
 }
 
 interface ExtensionState {
+    isReasoningExpanded: boolean;
     conversationHistory: DeepSeekMessage[];
     projectFiles: string[];
     currentFileContext?: string;
+    chatHeight?: number;
+    inputHeight?: number;
 }
