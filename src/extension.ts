@@ -1020,20 +1020,7 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                     });
                 }
 
-                // Корректное извлечение имени файла из пути
-                function getFileName(path) {
-                    return path.split(/[\\/]/).pop() || path; // Работает для Windows и Unix
-                }
-
-                function removeFile(file) {
-                    contextFiles = contextFiles.filter(f => f !== file);
-                    updateContextFiles();
-                    vscode.postMessage({ command: 'removeFile', file });
-                }
-
-                document.getElementById('settingsButton').addEventListener('click', () => {
-                    vscode.postMessage({ command: 'openSettings' });
-                });
+        
                 document.addEventListener('DOMContentLoaded', () => {
                     hljs.highlightAll();
                     const state = vscode.getState();
@@ -1054,21 +1041,16 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                 function startResize(e) {
                     isResizing = true;
                     const chat = document.getElementById('chat');
-                    document.body.style.userSelect = 'none';
-                    const toolbar = document.querySelector('.toolbar');
                     const panel = document.getElementById('reasoning-panel');
+                    const toggleButton = document.querySelector('.toggle-button');
                     const chatRect = chat.getBoundingClientRect();
-                    const containerRect = document.body.getBoundingClientRect();
-                    const toolbarHeight = toolbar ? toolbar.offsetHeight : 0;
+                    document.body.style.userSelect = 'none';
+                    
                     const reasoningOffset = panel && !panel.classList.contains('hidden') 
                         ? panel.offsetHeight 
                         : 0;
-                    const offset = chatRect.top + containerRect.top + toolbarHeight + reasoningOffset + 4;
+                    const offset = chatRect.top  + reasoningOffset + toggleButton.offsetHeight;
                     startY = e.clientY - offset;
-                    console.log('e:', e);
-                    console.log('containerRect:', containerRect);
-                    console.log('window:', window);
-                    console.log('chatRect: ', chatRect);
                     initialChatHeight = chat.offsetHeight;
                     document.addEventListener('mousemove', resize);
                     document.addEventListener('mouseup', stopResize);

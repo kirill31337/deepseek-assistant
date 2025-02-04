@@ -21,6 +21,8 @@ body {
   border-radius: 4px;
   background: #252526;
   box-sizing: border-box;
+  position: relative;
+  resize: none; /
 }
 
 .input-container {
@@ -295,6 +297,11 @@ pre code {
   position: relative; 
   transition: all 0.3s ease;
   border-radius: 3px; 
+  user-select: none;
+  -webkit-user-drag: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
 }
 
 .resizer:hover {
