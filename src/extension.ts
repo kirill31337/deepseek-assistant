@@ -58,8 +58,8 @@ let savedState: ExtensionState = {
     conversationHistory: [],
     projectFiles: [],
     currentFileContext: undefined,
-    chatHeight: 400,
-    inputHeight: 120
+    chatHeight: 0,
+    inputHeight: 0
 };
 async function updateSystemContext() {
     if (currentFileContext) {
@@ -172,17 +172,20 @@ function createWebviewPanel(context: vscode.ExtensionContext): vscode.WebviewPan
                 }
                 await saveState(context);
                 break;
-                case 'saveState':
-                    if (message.chatHeight !== undefined) savedState.chatHeight = message.chatHeight;
-                    if (message.inputHeight !== undefined) savedState.inputHeight = message.inputHeight;
-                    if (message.isReasoningExpanded !== undefined) {
-                        savedState.isReasoningExpanded = message.isReasoningExpanded;
-                    }
-                    savedState.conversationHistory = conversationHistory;
-                    savedState.projectFiles = projectFiles;
-                    savedState.currentFileContext = currentFileContext;
-                    await context.workspaceState.update('chatState', savedState);
-                    break;
+            case 'saveState':
+                if (message.chatHeight !== undefined) savedState.chatHeight = message.chatHeight;
+                if (message.inputHeight !== undefined) savedState.inputHeight = message.inputHeight;
+                if (message.isReasoningExpanded !== undefined) {
+                    savedState.isReasoningExpanded = message.isReasoningExpanded;
+                }
+                savedState.conversationHistory = conversationHistory;
+                savedState.projectFiles = projectFiles;
+                savedState.currentFileContext = currentFileContext;
+                await context.workspaceState.update('chatState', savedState);
+                break;
+            case 'copyToClipboard':
+                await vscode.env.clipboard.writeText(message.text);
+                break;
         }
     });
 
@@ -323,12 +326,12 @@ function handleError(error: unknown) {
 async function saveState(context: vscode.ExtensionContext) {
     if (conversationHistory.length > MAX_HISTORY_LENGTH) {
         conversationHistory = [
-            conversationHistory[0],
+            conversationHistory[0], 
             ...conversationHistory.slice(-MAX_HISTORY_LENGTH + 1)
         ];
     }
     
-    const state: ExtensionState = {
+    savedState = {
         conversationHistory,
         projectFiles: projectFiles.slice(-50),
         currentFileContext,
@@ -336,7 +339,8 @@ async function saveState(context: vscode.ExtensionContext) {
         chatHeight: savedState.chatHeight,
         inputHeight: savedState.inputHeight
     };
-    await context.workspaceState.update('chatState', state);
+
+    await context.workspaceState.update('chatState', savedState);
 }
 
 async function handleUserMessage(text: string, webview: vscode.Webview, context: vscode.ExtensionContext) {
@@ -420,6 +424,15 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
                 case 'sendMessage':
                     await handleUserMessage(message.text, webviewView.webview, this.context);
                     break;
+                case 'saveState':
+                    savedState = {
+                        ...savedState,
+                        isReasoningExpanded: message.isReasoningExpanded,
+                        chatHeight: message.chatHeight,
+                        inputHeight: message.inputHeight
+                    };
+                    await this.context.workspaceState.update('chatState', savedState);
+                    break;
                 case 'clearHistory':
                     conversationHistory = [];
                     projectFiles = currentFileContext ? [currentFileContext] : [];
@@ -450,7 +463,20 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
                     }
                     await saveState(this.context);
                     break;
-            }
+                case 'copyToClipboard':
+                    try {
+                        await vscode.env.clipboard.writeText(message.text);
+                        webviewView.webview.postMessage({
+                            command: 'copySuccess'
+                        });
+                    } catch (err) {
+                        console.error('Failed to copy to clipboard:', err);
+                        webviewView.webview.postMessage({
+                            command: 'copyError'
+                        });
+                    }
+                    break;
+        }
         });
         const editor = vscode.window.activeTextEditor;
         if (editor) {
@@ -635,24 +661,6 @@ export async function activate(context: vscode.ExtensionContext) {
     );
     
     context.subscriptions.push(registerCommand);
-    async function saveState(context: vscode.ExtensionContext) {
-        if (conversationHistory.length > MAX_HISTORY_LENGTH) {
-            conversationHistory = [
-                conversationHistory[0],
-                ...conversationHistory.slice(-MAX_HISTORY_LENGTH + 1)
-            ];
-        }
-        
-        const state: ExtensionState = {
-            conversationHistory,
-            projectFiles: projectFiles.slice(-50),
-            currentFileContext,
-            isReasoningExpanded: false,
-            chatHeight: 0,
-            inputHeight: 0
-        };
-        await context.workspaceState.update('chatState', state);
-    }
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(async event => {
             if (event.affectsConfiguration('editor.tokenColorCustomizations') ||
@@ -822,7 +830,6 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                 <div id="reasoning-panel" class="reasoning-panel hidden"></div>
             </div>
 
-            <script src="${syntaxHighlightingCSS}"></script>
             <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
             <script>
                 const vscode = acquireVsCodeApi();
@@ -846,6 +853,15 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
 
                 window.addEventListener('message', event => {
                     switch (event.data.command) {
+                        case 'saveState':
+                            savedState = {
+                                ...savedState,
+                                isReasoningExpanded: message.isReasoningExpanded,
+                                chatHeight: message.chatHeight,
+                                inputHeight: message.inputHeight
+                            };
+                            vscode.setState(savedState);
+                            break;
                         case 'streamResponse':
                             handleStream(event.data);
                             break;
@@ -861,6 +877,31 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                             chat.innerHTML = '';
                             document.getElementById('reasoning-content').innerHTML = '';
                             break;
+                        case 'copyToClipboard':
+                            navigator.clipboard.writeText(event.data.text)
+                                .catch(err => console.error('Failed to copy:', err));
+                            break;
+                        case 'copySuccess':
+                            const button = document.querySelector('.copy-button:hover');
+                            if (button) {
+                                button.textContent = 'Copied!';
+                                button.classList.add('success');
+                                setTimeout(() => {
+                                    button.textContent = 'Copy';
+                                    button.classList.remove('success');
+                                }, 2000);
+                            }
+                            break;
+                            
+                        case 'copyError':
+                            const errorButton = document.querySelector('.copy-button:hover');
+                            if (errorButton) {
+                                errorButton.textContent = 'Error';
+                                setTimeout(() => {
+                                    errorButton.textContent = 'Copy';
+                                }, 2000);
+                            }
+                            break;
                         case 'updateFiles':
                             console.log('updateFiles 865:', 'YES');
                             contextFiles = event.data.files || [];
@@ -875,6 +916,39 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                             event.data.history.forEach(msg => {
                                 if (msg.role !== 'system') {
                                     addMessage(msg.role, msg.content);
+                                }
+                            });
+                            document.querySelectorAll('pre').forEach(pre => {
+                                pre.style.position = 'relative';
+                                if (!pre.querySelector('.copy-button')) {
+                                    const button = document.createElement('button');
+                                    button.className = 'copy-button';
+                                    button.textContent = 'Copy';
+                                    button.style.position = 'absolute';
+                                    button.style.top = '8px';
+                                    button.style.right = '8px';
+                                    button.onclick = async (e) => {
+                                        const code = pre.querySelector('code')?.innerText || '';
+                                        try {
+                                            await vscode.postMessage({ 
+                                                command: 'copyToClipboard', 
+                                                text: code 
+                                            });
+                                            button.textContent = 'Copied!';
+                                            button.classList.add('success');
+                                            setTimeout(() => {
+                                                button.textContent = 'Copy';
+                                                button.classList.remove('success');
+                                            }, 2000);
+                                        } catch (err) {
+                                            console.error('Failed to copy code:', err);
+                                            button.textContent = 'Error';
+                                            setTimeout(() => {
+                                                button.textContent = 'Copy';
+                                            }, 2000);
+                                        }
+                                    };
+                                    pre.insertBefore(button, pre.firstChild);
                                 }
                             });
                             hljs.highlightAll();
@@ -963,9 +1037,8 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                         if (contentDiv) {
                             contentDiv.innerHTML = marked.parse(text);
                             
-                            // Добавляем кнопки копирования ко всем блокам кода
                             contentDiv.querySelectorAll('pre').forEach(pre => {
-                                pre.style.position = 'relative'; // Явно задаем позиционирование
+                                pre.style.position = 'relative';
                                 if (!pre.querySelector('.copy-button')) {
                                     const button = document.createElement('button');
                                     button.className = 'copy-button';
@@ -974,9 +1047,27 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                                     button.style.top = '8px';
                                     button.style.right = '8px';
                                     button.onclick = async (e) => {
-                                        // ...existing code...
-                                    };
-                                    pre.insertBefore(button, pre.firstChild); // Меняем способ добавления
+                                    const code = pre.querySelector('code')?.innerText || '';
+                                    try {
+                                        await vscode.postMessage({ 
+                                            command: 'copyToClipboard', 
+                                            text: code 
+                                        });
+                                        button.textContent = 'Copied!';
+                                        button.classList.add('success');
+                                        setTimeout(() => {
+                                            button.textContent = 'Copy';
+                                            button.classList.remove('success');
+                                        }, 2000);
+                                    } catch (err) {
+                                        console.error('Failed to copy code:', err);
+                                        button.textContent = 'Error';
+                                        setTimeout(() => {
+                                            button.textContent = 'Copy';
+                                        }, 2000);
+                                    }
+                                };
+                                    pre.insertBefore(button, pre.firstChild);
                                 }
                             });
                             
@@ -1028,7 +1119,9 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                     
                     vscode.postMessage({ 
                         command: 'saveState',
-                        isReasoningExpanded: isExpanded
+                        isReasoningExpanded: isExpanded,
+                        chatHeight: document.getElementById('chat').offsetHeight,
+                        inputHeight: document.getElementById('input').offsetHeight
                     });
                 }
 
@@ -1088,7 +1181,7 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                     updateContextFiles();
                     vscode.postMessage({ command: 'removeFile', file });
                 }
-                    
+
                 document.addEventListener('DOMContentLoaded', () => {
                     hljs.highlightAll();
                     const reasoningPanel = document.getElementById('reasoning-panel');
@@ -1101,20 +1194,20 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                         arrow.classList.add('down');
                     }
 
-                    // Восстанавливаем размеры
                     const chat = document.getElementById('chat');
                     const input = document.getElementById('input');
-                    if (chat) chat.style.height = '${chatHeight}px';
-                    if (input) input.style.height = '${inputHeight}px';
-                    if (state && state.isReasoningVisible) {
-                        const reasoningContainer = document.getElementById('reasoning-container');
-                        const arrow = document.querySelector('.toggle-button .arrow');
-                        if (reasoningContainer && arrow) {
-                            reasoningContainer.classList.remove('hidden');
-                            reasoningContainer.classList.add('visible');
-                            arrow.classList.remove('up');
-                            arrow.classList.add('down');
-                        }
+                    if (${savedState?.isReasoningExpanded || true}) {
+                        reasoningPanel.classList.remove('hidden');
+                        reasoningPanel.classList.add('visible');
+                        arrow.classList.remove('up');
+                        arrow.classList.add('down');
+                    }
+
+                    if (chat) {
+                        chat.style.height = '${savedState?.chatHeight || 400}px';
+                    }
+                    if (input) {
+                        input.style.height = '${savedState?.inputHeight || 120}px';
                     }
                 });
                 let startY = 0;
@@ -1171,9 +1264,17 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                     document.removeEventListener('mousemove', resize);
                     document.removeEventListener('mouseup', stopResize);
                     const chat = document.getElementById('chat');
+                    const input = document.getElementById('input');
+                    const reasoningPanel = document.getElementById('reasoning-panel');
                     chat.style.userSelect = 'text';
                     document.querySelectorAll('.message').forEach(msg => {
                         msg.style.userSelect = 'text';
+                    });
+                    vscode.postMessage({ 
+                        command: 'saveState',
+                        chatHeight: chat.offsetHeight,
+                        inputHeight: input.offsetHeight,
+                        isReasoningExpanded: !reasoningPanel.classList.contains('hidden')
                     });
                 }
                 

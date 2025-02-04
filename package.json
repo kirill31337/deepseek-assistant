@@ -2,7 +2,7 @@
     "name": "deepseek-r1-assistant",
     "displayName": "Deepseek R1 Assistant",
     "description": "VS Code extension for Deepseek(R1) AI",
-    "version": "0.1.8",
+    "version": "0.1.9",
     "publisher": "kirill31337",
     "icon": "media/icon.png",
     "license": "MIT",
