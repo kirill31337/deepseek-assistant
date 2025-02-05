@@ -221,8 +221,17 @@ async function handleAddFiles(webview: vscode.Webview, context: vscode.Extension
 async function handleStreamingRequest(request: DeepSeekRequest, webview: vscode.Webview, context: vscode.ExtensionContext) {
     request.model = "deepseek-reasoner";
     let buffer = '';
+    let timeoutId: NodeJS.Timeout | undefined;
+    let dataReceived = false;
     try {
         const config = vscode.workspace.getConfiguration('deepseekAssistant');
+        timeoutId = setTimeout(() => {
+            if (!dataReceived) {
+                currentStream?.abort();
+                webview.postMessage({ command: 'endLoading' });
+                vscode.window.showErrorMessage('Request timed out. Please try again.');
+            }
+        }, 20000);
         const response = await axios.post(
             config.get('endpoint', 'https://api.deepseek.com/v1/chat/completions'),
             request,
@@ -244,8 +253,8 @@ async function handleStreamingRequest(request: DeepSeekRequest, webview: vscode.
                     try {
                         return JSON.parse(data);
                     } catch (e) {
-                        console.log('Partial JSON received:', data);
-                        return null;
+                        webview.postMessage({ command: 'endLoading' });
+                        console.error('Stream processing error:', e);
                     }
                 };
                 for (let i = 0; i < lines.length - 1; i++) {
@@ -256,6 +265,7 @@ async function handleStreamingRequest(request: DeepSeekRequest, webview: vscode.
                     }
                     
                     if (line.startsWith('data: ')) {
+                        clearTimeout(timeoutId);
                         const data = parseStreamData(line.slice(6));
                         if (!data) continue;
                         const contentChunk = data.choices[0]?.delta?.content || '';
@@ -280,6 +290,7 @@ async function handleStreamingRequest(request: DeepSeekRequest, webview: vscode.
         });
 
         response.data.on('end', () => {
+            clearTimeout(timeoutId);
             webview.postMessage({
                 command: 'streamResponse',
                 text: '',
@@ -302,8 +313,9 @@ async function handleStreamingRequest(request: DeepSeekRequest, webview: vscode.
         });
 
     } catch (error) {
+        clearTimeout(timeoutId);
         if (!axios.isCancel(error)) {
-            webview.postMessage({ command: 'endLoading' }); 
+            webview.postMessage({ command: 'endLoading' });
             handleError(error);
         }
     }
@@ -587,7 +599,17 @@ export async function activate(context: vscode.ExtensionContext) {
             }
         });
     }
-
+    context.subscriptions.push(
+        vscode.workspace.onDidSaveTextDocument(async (doc) => {
+            const savedPath = normalizePath(doc.uri.fsPath);
+            
+            if (projectFiles.includes(savedPath) || savedPath === currentFileContext) {
+                await updateSystemContext();
+                sendFileUpdates(panel?.webview!);
+            }
+        })
+    );
+    
     context.subscriptions.push(
         vscode.window.onDidChangeWindowState(e => {
             if (e.active ) {
