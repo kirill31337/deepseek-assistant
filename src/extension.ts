@@ -18,7 +18,8 @@ let savedState: ExtensionState = {
     projectFiles: [],
     currentFileContext: undefined,
     chatHeight: 0,
-    inputHeight: 0
+    inputHeight: 0,
+    inputText: ''
 };
 
 const debounce = (fn: Function, delay: number) => { 
@@ -272,7 +273,8 @@ async function saveState(context: vscode.ExtensionContext) {
         currentFileContext,
         isReasoningExpanded: savedState.isReasoningExpanded,
         chatHeight: savedState.chatHeight,
-        inputHeight: savedState.inputHeight
+        inputHeight: savedState.inputHeight,
+        inputText: savedState.inputText
     };
 
     await context.workspaceState.update('chatState', savedState);
@@ -329,7 +331,9 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
         this._view = webviewView;
         webviewView.webview.options = {
             enableScripts: true,
-            localResourceRoots: [this.context.extensionUri]
+            localResourceRoots: [this.context.extensionUri],
+            enableCommandUris: true,
+            enableForms: false,
         };
         
         webviewView.onDidChangeVisibility(() => {
@@ -365,7 +369,8 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
                         ...savedState,
                         isReasoningExpanded: message.isReasoningExpanded,
                         chatHeight: message.chatHeight,
-                        inputHeight: message.inputHeight
+                        inputHeight: message.inputHeight,
+                        inputText: message.inputText
                     };
                     await this.context.workspaceState.update('chatState', savedState);
                     break;
@@ -469,7 +474,8 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
             projectFiles: [],
             currentFileContext: undefined,
             chatHeight: 0,
-            inputHeight: 0
+            inputHeight: 0,
+            inputText: ''
         };
         if (savedState) {
             webview.postMessage({
@@ -477,7 +483,8 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
                 state: {
                     isReasoningExpanded: savedState.isReasoningExpanded,
                     chatHeight: savedState.chatHeight,
-                    inputHeight: savedState.inputHeight
+                    inputHeight: savedState.inputHeight,
+                    inputText: savedState.inputText
                 }
             });
         }
@@ -532,7 +539,8 @@ export async function activate(context: vscode.ExtensionContext) {
             state: {
                 isReasoningExpanded: savedState.isReasoningExpanded,
                 chatHeight: savedState.chatHeight,
-                inputHeight: savedState.inputHeight
+                inputHeight: savedState.inputHeight,
+                inputText: savedState.inputText
             }
         });
     }
@@ -748,9 +756,6 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
     );
 
     const savedState = context.workspaceState.get<ExtensionState>('chatState');
-    const isReasoningExpanded = savedState?.isReasoningExpanded || false;
-    const chatHeight = savedState?.chatHeight || 400;
-    const inputHeight = savedState?.inputHeight || 120;
     const syntaxHighlightingCSS = generateSyntaxHighlightingCSS();
     const config = vscode.workspace.getConfiguration('deepseekAssistant');
     const apiKey = config.get('apiKey', '');
@@ -813,7 +818,8 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                                 ...savedState,
                                 isReasoningExpanded: message.isReasoningExpanded,
                                 chatHeight: message.chatHeight,
-                                inputHeight: message.inputHeight
+                                inputHeight: message.inputHeight,
+                                inputText: message.inputText
                             };
                             vscode.setState(savedState);
                             break;
@@ -929,8 +935,7 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                         case 'restoreState':
                             const reasoningPanel = document.getElementById('reasoning-panel');
                             const arrow = document.querySelector('.toggle-button .arrow');
-                            const chat = document.getElementById('chat');
-                            const input = document.getElementById('input');
+
 
                             if (event.data.state.isReasoningExpanded) {
                                 reasoningPanel.classList.remove('hidden');
@@ -950,6 +955,10 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                             
                             if (input && event.data.state.inputHeight) {
                                 input.style.height = event.data.state.inputHeight + 'px';
+                            }
+                            
+                            if (input && event.data.state.inputText) {
+                                input.value = event.data.state.inputText;
                             }
                             break;
                     }
@@ -1104,13 +1113,6 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                     });
                 }
 
-                input.addEventListener('keydown', (e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        sendMessage();
-                    }
-                });
-
                 let contextFiles = [];
 
                 function updateContextFiles() {
@@ -1161,19 +1163,18 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                 }
 
                 document.addEventListener('DOMContentLoaded', () => {
-                    hljs.highlightAll();
+                    const chat = document.getElementById('chat');
+                    const input = document.getElementById('input');
                     const reasoningPanel = document.getElementById('reasoning-panel');
                     const arrow = document.querySelector('.toggle-button .arrow');
                     const state = vscode.getState();
-                    if (${isReasoningExpanded}) {
+                    if (${savedState?.isReasoningExpanded}) {
                         reasoningPanel.classList.remove('hidden');
                         reasoningPanel.classList.add('visible');
                         arrow.classList.remove('up');
                         arrow.classList.add('down');
                     }
 
-                    const chat = document.getElementById('chat');
-                    const input = document.getElementById('input');
                     if (${savedState?.isReasoningExpanded || true}) {
                         reasoningPanel.classList.remove('hidden');
                         reasoningPanel.classList.add('visible');
@@ -1186,6 +1187,22 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                     }
                     if (input) {
                         input.style.height = '${savedState?.inputHeight || 120}px';
+                        input.value = '${savedState?.inputText || ''}';
+                    }
+                    if (input) {
+                        input.addEventListener('keydown', (e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                sendMessage();
+                            }
+                        });
+                        
+                        input.addEventListener('input', () => {
+                            vscode.postMessage({ 
+                                command: 'saveState',
+                                inputText: input.value
+                            });
+                        });
                     }
                 });
                 let startY = 0;
@@ -1278,4 +1295,5 @@ interface ExtensionState {
     currentFileContext?: string;
     chatHeight?: number;
     inputHeight?: number;
+    inputText?: string;
 }
