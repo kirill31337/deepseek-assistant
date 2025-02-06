@@ -2,10 +2,24 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import axios, { AxiosError } from 'axios';
 import { marked } from 'marked';
-import { sanitizeMarkdownText } from './utils/textSanitizer';
 import hljs from 'highlight.js';
 const MAX_HISTORY_LENGTH = 200;
 
+let viewProvider: DeepSeekViewProvider;
+let conversationHistory: DeepSeekMessage[] = [];
+let currentStream: AbortController | undefined;
+let currentAssistantContent = '';
+let projectFiles: string[] = [];
+let currentFileContext: string | undefined;
+let panel: vscode.WebviewPanel | undefined;
+let savedState: ExtensionState = {
+    isReasoningExpanded: false,
+    conversationHistory: [],
+    projectFiles: [],
+    currentFileContext: undefined,
+    chatHeight: 0,
+    inputHeight: 0
+};
 
 const debounce = (fn: Function, delay: number) => { 
     let timeout: NodeJS.Timeout; 
@@ -15,6 +29,14 @@ const debounce = (fn: Function, delay: number) => {
     }; 
 };
 
+function sanitizeMarkdownText(text: string): string {
+    return text
+        .replace(/(.)\x01+/g, '$1')
+        .replace(/(```[\s\S]*?)(?=```|$)/g, (match, p1) => {
+            const hasClosing = match.includes('```');
+            return hasClosing ? match : p1 + '```';
+        });
+}
 
 const delayedFileUpdate = debounce((webview: vscode.Webview) => {
     sendFileUpdates(webview);
@@ -47,20 +69,6 @@ interface DeepSeekRequest {
     stream?: boolean;
 }
 
-let conversationHistory: DeepSeekMessage[] = [];
-let currentStream: AbortController | undefined;
-let currentAssistantContent = '';
-let projectFiles: string[] = [];
-let currentFileContext: string | undefined;
-let panel: vscode.WebviewPanel | undefined;
-let savedState: ExtensionState = {
-    isReasoningExpanded: false,
-    conversationHistory: [],
-    projectFiles: [],
-    currentFileContext: undefined,
-    chatHeight: 0,
-    inputHeight: 0
-};
 async function updateSystemContext() {
     if (currentFileContext) {
         try {
@@ -111,93 +119,6 @@ async function buildCodeContext(currentFile: string | undefined, projectFiles: s
     return codeContext;
 }
 
-
-
-
-function getOrCreatePanel(context: vscode.ExtensionContext): vscode.WebviewPanel {
-    if (panel) {
-        return panel;
-    }
-    return createWebviewPanel(context);
-}
-
-function createWebviewPanel(context: vscode.ExtensionContext): vscode.WebviewPanel {
-    
-    panel = vscode.window.createWebviewPanel(
-        'deepseekChat',
-        'DeepSeek Assistant Pro',
-        vscode.ViewColumn.Beside,
-        {
-            enableScripts: true,
-            retainContextWhenHidden: true,
-            localResourceRoots: [context.extensionUri]
-        }
-    );
-
-    panel.webview.html = getWebviewContentForView(context, panel.webview);
-    delayedFileUpdate(panel.webview);
-    panel.webview.onDidReceiveMessage(async message => {
-        switch (message.command) {
-            case 'sendMessage':
-                if (panel) {
-                    await handleUserMessage(message.text, panel.webview, context);
-                }
-                break;
-            case 'clearHistory':
-                conversationHistory = [];
-                projectFiles = [];
-                await updateSystemContext();
-                if (panel) {
-                    panel.webview.postMessage({ command: 'clearHistory' });
-                    delayedFileUpdate(panel.webview);
-                }
-                break;
-            case 'addFiles':
-                if (panel) {
-                    await handleAddFiles(panel.webview, context);
-                }
-                break;
-            case 'abortRequest':
-                currentStream?.abort();
-                currentStream = undefined;
-                break;
-            case 'removeFile':
-                projectFiles = projectFiles.filter(f => f !== message.file);
-                if (currentFileContext === message.file) {
-                    currentFileContext = undefined;
-                }
-                await updateSystemContext();
-                if (panel) {
-                    delayedFileUpdate(panel.webview);
-                }
-                await saveState(context);
-                break;
-            case 'saveState':
-                if (message.chatHeight !== undefined) savedState.chatHeight = message.chatHeight;
-                if (message.inputHeight !== undefined) savedState.inputHeight = message.inputHeight;
-                if (message.isReasoningExpanded !== undefined) {
-                    savedState.isReasoningExpanded = message.isReasoningExpanded;
-                }
-                savedState.conversationHistory = conversationHistory;
-                savedState.projectFiles = projectFiles;
-                savedState.currentFileContext = currentFileContext;
-                await context.workspaceState.update('chatState', savedState);
-                break;
-            case 'copyToClipboard':
-                await vscode.env.clipboard.writeText(message.text);
-                break;
-        }
-    });
-
-    panel.onDidDispose(() => {
-        panel = undefined;
-        conversationHistory = [];
-        projectFiles = [];
-    });
-
-    return panel;
-}
-
 async function handleAddFiles(webview: vscode.Webview, context: vscode.ExtensionContext) {
     const uris = await vscode.window.showOpenDialog({
         canSelectMany: true,
@@ -215,6 +136,7 @@ async function handleAddFiles(webview: vscode.Webview, context: vscode.Extension
         projectFiles.push(...newFiles);
         await updateSystemContext();
         delayedFileUpdate(webview);
+        await saveState(context); 
     }
 }
 
@@ -225,13 +147,14 @@ async function handleStreamingRequest(request: DeepSeekRequest, webview: vscode.
     let dataReceived = false;
     try {
         const config = vscode.workspace.getConfiguration('deepseekAssistant');
+        const timeout = config.get('timeout', 40) * 1000;
         timeoutId = setTimeout(() => {
             if (!dataReceived) {
-                currentStream?.abort();
-                webview.postMessage({ command: 'endLoading' });
-                vscode.window.showErrorMessage('Request timed out. Please try again.');
+            currentStream?.abort();
+            webview.postMessage({ command: 'endLoading' });
+            vscode.window.showErrorMessage('Request timed out. Please try again.');
             }
-        }, 20000);
+        }, timeout);
         const response = await axios.post(
             config.get('endpoint', 'https://api.deepseek.com/v1/chat/completions'),
             request,
@@ -408,6 +331,7 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
             enableScripts: true,
             localResourceRoots: [this.context.extensionUri]
         };
+        
         webviewView.onDidChangeVisibility(() => {
             if (webviewView.visible) {
                 this.refreshWebviewState(webviewView.webview);
@@ -488,7 +412,7 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
                         });
                     }
                     break;
-        }
+            }
         });
         const editor = vscode.window.activeTextEditor;
         if (editor) {
@@ -539,18 +463,28 @@ class DeepSeekViewProvider implements vscode.WebviewViewProvider {
             command: 'updateApiKey',
             apiKey: config.get('apiKey', '')
         });
-        webview.postMessage({
-            command: 'restoreState',
-            state: {
-                isReasoningExpanded: savedState.isReasoningExpanded,
-                chatHeight: savedState.chatHeight,
-                inputHeight: savedState.inputHeight
-            }
-        });
+        savedState = this.context.workspaceState.get<ExtensionState>('chatState') || {
+            isReasoningExpanded: false,
+            conversationHistory: [],
+            projectFiles: [],
+            currentFileContext: undefined,
+            chatHeight: 0,
+            inputHeight: 0
+        };
+        if (savedState) {
+            webview.postMessage({
+                command: 'restoreState',
+                state: {
+                    isReasoningExpanded: savedState.isReasoningExpanded,
+                    chatHeight: savedState.chatHeight,
+                    inputHeight: savedState.inputHeight
+                }
+            });
+        }
     }
 }
 
-let viewProvider: DeepSeekViewProvider;
+
 export async function activate(context: vscode.ExtensionContext) {
     viewProvider = new DeepSeekViewProvider(context);
     context.subscriptions.push(
@@ -559,6 +493,7 @@ export async function activate(context: vscode.ExtensionContext) {
             viewProvider
         )
     );
+
     const savedState = context.workspaceState.get<ExtensionState>('chatState');
     if (savedState) {
         conversationHistory = savedState.conversationHistory;
@@ -570,14 +505,15 @@ export async function activate(context: vscode.ExtensionContext) {
                 currentFileContext = undefined;
             }
         }
-        projectFiles = savedState.projectFiles.map(f => normalizePath(f)).filter(async f => {
+        projectFiles = await Promise.all(savedState.projectFiles.map(async f => {
             try {
                 await vscode.workspace.fs.stat(vscode.Uri.file(f));
-                return true;
+                return normalizePath(f);
             } catch {
-                return false;
+                return null;
             }
-        });
+        })).then(files => files.filter(f => f !== null) as string[]);
+
         conversationHistory = savedState.conversationHistory.filter((msg, index, self) =>
             index === self.findIndex(m => 
                 m.role === msg.role && 
@@ -585,6 +521,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 msg.content !== ''
             )
         );
+
         viewProvider.updateFiles([...projectFiles]);
         panel?.webview.postMessage({
             command: 'loadHistory',
@@ -599,30 +536,30 @@ export async function activate(context: vscode.ExtensionContext) {
             }
         });
     }
+
     context.subscriptions.push(
         vscode.workspace.onDidSaveTextDocument(async (doc) => {
             const savedPath = normalizePath(doc.uri.fsPath);
-            
             if (projectFiles.includes(savedPath) || savedPath === currentFileContext) {
                 await updateSystemContext();
                 sendFileUpdates(panel?.webview!);
             }
         })
     );
-    
+
     context.subscriptions.push(
         vscode.window.onDidChangeWindowState(e => {
-            if (e.active ) {
+            if (e.active) {
                 if (panel) {
                     panel.webview.postMessage({
                         command: 'loadHistory',
                         history: conversationHistory.filter(m => m.role !== 'system')
                     });
-                    
                 }
             }
         })
     );
+
     context.subscriptions.push(
         vscode.window.onDidChangeActiveTextEditor(async editor => {
             if (!editor) return;
@@ -647,13 +584,9 @@ export async function activate(context: vscode.ExtensionContext) {
                 vscode.window.showErrorMessage('Invalid DeepSeek API Key. Please update your settings.');
                 return;
             }
-            if (!panel) {
-                panel = createWebviewPanel(context);
-                await updateSystemContext();
-            }
-            panel.reveal(vscode.ViewColumn.Beside);
         }
     );
+
     context.subscriptions.push(
         vscode.commands.registerCommand('deepseek-assistant.addFiles', async () => {
             const webview = viewProvider.getWebview();
@@ -681,7 +614,7 @@ export async function activate(context: vscode.ExtensionContext) {
             vscode.commands.executeCommand('workbench.action.openSettings', 'deepseekAssistant');
         })
     );
-    
+
     context.subscriptions.push(registerCommand);
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(async event => {
@@ -914,7 +847,6 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                                 }, 2000);
                             }
                             break;
-                            
                         case 'copyError':
                             const errorButton = document.querySelector('.copy-button:hover');
                             if (errorButton) {
@@ -925,7 +857,6 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                             }
                             break;
                         case 'updateFiles':
-                            console.log('updateFiles 865:', 'YES');
                             contextFiles = event.data.files || [];
                             updateContextFiles();
                             break;
@@ -994,6 +925,32 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                             const styleElement = document.createElement('style');
                             styleElement.textContent = event.data.styles;
                             document.head.appendChild(styleElement);
+                            break;
+                        case 'restoreState':
+                            const reasoningPanel = document.getElementById('reasoning-panel');
+                            const arrow = document.querySelector('.toggle-button .arrow');
+                            const chat = document.getElementById('chat');
+                            const input = document.getElementById('input');
+
+                            if (event.data.state.isReasoningExpanded) {
+                                reasoningPanel.classList.remove('hidden');
+                                reasoningPanel.classList.add('visible'); 
+                                arrow.classList.remove('up');
+                                arrow.classList.add('down');
+                            } else {
+                                reasoningPanel.classList.remove('visible');
+                                reasoningPanel.classList.add('hidden');
+                                arrow.classList.remove('down'); 
+                                arrow.classList.add('up');
+                            }
+
+                            if (chat && event.data.state.chatHeight) {
+                                chat.style.height = event.data.state.chatHeight + 'px';
+                            }
+                            
+                            if (input && event.data.state.inputHeight) {
+                                input.style.height = event.data.state.inputHeight + 'px';
+                            }
                             break;
                     }
                 });
@@ -1157,7 +1114,6 @@ function getWebviewContentForView(context: vscode.ExtensionContext, webview: vsc
                 let contextFiles = [];
 
                 function updateContextFiles() {
-                    console.log('updateFiles 1045:', 'YES');
                     const container = document.getElementById('context-files');
                     if (!container) {
                         console.warn('Context files container not found');

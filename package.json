@@ -2,7 +2,7 @@
     "name": "deepseek-r1-assistant",
     "displayName": "Deepseek R1 Assistant",
     "description": "VS Code extension for Deepseek(R1) AI",
-    "version": "0.2.0",
+    "version": "0.2.2",
     "publisher": "kirill31337",
     "icon": "media/icon.png",
     "license": "MIT",
@@ -58,7 +58,13 @@
                 },
                 "deepseekAssistant.maxTokens": {
                     "type": "number",
-                    "default": 2000
+                    "default": 2000,
+                    "description": "Response length(8000 max)"
+                },
+                "deepseekAssistant.timeout": {
+                    "type": "number",
+                    "default": 40,
+                    "description": "Timeout to API response"
                 }
             }
         },
